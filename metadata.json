@@ -1,0 +1,6 @@
+{
+  "name": "Sovereign Manifold",
+  "description": "Full-stack edge-governance ledger control console and vessel bridge for the FPT-Ω Synara Class vessel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
