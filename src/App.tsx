@@ -1742,6 +1742,20 @@ export default function App() {
             .animate-padlock-unlock {
               animation: padlockUnlockFlicker 1.4s ease-out forwards;
             }
+            @keyframes loadDistributionDash {
+              0% { stroke-dashoffset: 40; }
+              100% { stroke-dashoffset: 0; }
+            }
+            @keyframes loadGlowPulse {
+              0%, 100% { opacity: 0.35; filter: drop-shadow(0 0 2px #f59e0b); }
+              50% { opacity: 0.95; filter: drop-shadow(0 0 10px #ef4444); }
+            }
+            .animate-load-distribution {
+              animation: loadDistributionDash 1.2s linear infinite;
+            }
+            .animate-load-pulse {
+              animation: loadGlowPulse 1.8s ease-in-out infinite;
+            }
           `}</style>
           <radialGradient id="polaris-glow" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
@@ -2008,6 +2022,159 @@ export default function App() {
         )}
 
         {/* Localized D3 Stress Heatmap Overlay */}
+        {activeStress && (() => {
+          // Pre-calculate node coordinates and quadrant assignments (Q1: 0-89°, Q2: 90-179°, Q3: 180-269°, Q4: 270-359°)
+          const preparedNodes = computedStressZones.map((zone) => {
+            const rad = (zone.angle * Math.PI) / 180;
+            const rx = r - 15;
+            const ry = (r - 15) * Math.cos(tilt);
+            const x_rot = rx * Math.cos(rad);
+            const y_rot = ry * Math.sin(rad);
+            const rotAngle = (23.5 * Math.PI) / 180;
+            const x = cx + (x_rot * Math.cos(rotAngle) - y_rot * Math.sin(rotAngle));
+            const y = cy + (x_rot * Math.sin(rotAngle) + y_rot * Math.cos(rotAngle));
+
+            const normAngle = ((zone.angle % 360) + 360) % 360;
+            const quadrant = Math.floor(normAngle / 90) + 1; // 1, 2, 3, or 4
+
+            return {
+              ...zone,
+              x,
+              y,
+              normAngle,
+              quadrant
+            };
+          });
+
+          const nowSec = Date.now() * 0.001;
+
+          return (
+            <g key="quadrant-load-distribution-layer" className="pointer-events-none">
+              {[1, 2, 3, 4].map((qNum) => {
+                const qNodes = preparedNodes.filter(n => n.quadrant === qNum);
+                if (qNodes.length < 2) return null;
+
+                const maxStress = Math.max(...qNodes.map(n => n.stress));
+                const avgStress = qNodes.reduce((sum, n) => sum + n.stress, 0) / qNodes.length;
+
+                // High-stress quadrant state check (max stress > 0.50, avg > 0.45, locked nodes, or critical mode)
+                const isQuadrantHighStress = maxStress > 0.50 || avgStress > 0.45 || isCriticalActive || qNodes.some(n => n.locked);
+                if (!isQuadrantHighStress) return null;
+
+                const quadLabel = `Q${qNum}`;
+
+                return (
+                  <g key={`quadrant-load-group-${qNum}`}>
+                    {qNodes.map((n1, idx1) => {
+                      return qNodes.slice(idx1 + 1).map((n2) => {
+                        const pairKey = `q${qNum}-link-${n1.id}-${n2.id}`;
+
+                        // Calculate midpoint and arched bezier control point
+                        const mx = (n1.x + n2.x) / 2;
+                        const my = (n1.y + n2.y) / 2;
+                        const dx = mx - cx;
+                        const dy = my - cy;
+                        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                        const offset = 22; // Arc outwards from center for clear visibility
+                        const qx = mx + (dx / dist) * offset;
+                        const qy = my + (dy / dist) * offset;
+
+                        const pathD = `M ${n1.x} ${n1.y} Q ${qx} ${qy} ${n2.x} ${n2.y}`;
+
+                        // Color scheme based on stress severity
+                        const isDanger = maxStress > 0.75 || isCriticalActive;
+                        const strokeColor = isDanger ? "#ef4444" : maxStress > 0.60 ? "#f59e0b" : "#38bdf8";
+                        const glowColor = isDanger ? "#f87171" : maxStress > 0.60 ? "#fbbf24" : "#0284c7";
+
+                        // Travelling energy pulse particle t along quadratic bezier
+                        const speed = 0.5 + maxStress * 0.8;
+                        const t = (nowSec * speed) % 1;
+                        const px = (1 - t) * (1 - t) * n1.x + 2 * (1 - t) * t * qx + t * t * n2.x;
+                        const py = (1 - t) * (1 - t) * n1.y + 2 * (1 - t) * t * qy + t * t * n2.y;
+
+                        return (
+                          <g key={pairKey}>
+                            {/* Outer glowing underlay path */}
+                            <path
+                              d={pathD}
+                              fill="none"
+                              stroke={glowColor}
+                              strokeWidth={isDanger ? "4.5" : "3"}
+                              opacity={isDanger ? "0.55" : "0.35"}
+                              filter="url(#neon)"
+                              className="animate-load-pulse"
+                            />
+
+                            {/* Inner animated dashed load path */}
+                            <path
+                              d={pathD}
+                              fill="none"
+                              stroke={strokeColor}
+                              strokeWidth={isDanger ? "2.2" : "1.5"}
+                              strokeDasharray="6,4"
+                              opacity="0.9"
+                              className="animate-load-distribution"
+                            />
+
+                            {/* Radial vector load-distribution force line to center */}
+                            <line
+                              x1={qx}
+                              y1={qy}
+                              x2={cx}
+                              y2={cy}
+                              stroke={strokeColor}
+                              strokeWidth="0.8"
+                              strokeDasharray="2,3"
+                              opacity="0.35"
+                            />
+
+                            {/* Animated travelling load particle */}
+                            <circle
+                              cx={px}
+                              cy={py}
+                              r={isDanger ? "4" : "3"}
+                              fill="#ffffff"
+                              stroke={strokeColor}
+                              strokeWidth="1.5"
+                              className="animate-pulse"
+                            />
+
+                            {/* Structural Load Badge at Arc Control Point */}
+                            <g transform={`translate(${qx}, ${qy})`}>
+                              <rect
+                                x="-25"
+                                y="-7.5"
+                                width="50"
+                                height="13"
+                                fill="#050814"
+                                stroke={strokeColor}
+                                strokeWidth="0.8"
+                                rx="3"
+                                opacity="0.92"
+                              />
+                              <text
+                                x="0"
+                                y="1.5"
+                                fill={isDanger ? "#fca5a5" : "#fde68a"}
+                                fontFamily="monospace"
+                                fontSize="6.5"
+                                fontWeight="extrabold"
+                                textAnchor="middle"
+                              >
+                                {quadLabel} LOAD {(avgStress * 100).toFixed(0)}%
+                              </text>
+                            </g>
+                          </g>
+                        );
+                      });
+                    })}
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })()}
+
         {activeStress && computedStressZones.map((zone, idx) => {
           const rad = (zone.angle * Math.PI) / 180;
           const rx = r - 15;
@@ -2592,6 +2759,29 @@ export default function App() {
               <span>Unlock</span>
             </button>
           </div>
+
+          <button
+            onClick={() => {
+              const unlockedSelected = computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked);
+              if (unlockedSelected.length > 0) {
+                const overrides: Record<string, number> = {};
+                unlockedSelected.forEach(node => {
+                  overrides[node.id] = 0.10;
+                  addLog('REPAIR', `Quick Reset Surge: Instantly discharged nanites to segment ${node.name} (reset to 10% nominal baseline).`);
+                });
+                setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
+                setCumulativeNanitesDischarged(prev => prev + 250 * unlockedSelected.length);
+                showBanner(`⚡ QUICK RESET: Instantly discharged nanite surge to ${unlockedSelected.length} selected nodes!`);
+              } else {
+                showBanner(`⚠️ QUICK RESET BLOCKED: All selected nodes are locked!`);
+              }
+            }}
+            className="w-full py-1.5 px-2 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-200 hover:text-white border border-emerald-500/40 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-sm"
+            title="Instantly discharge nanites to all selected unlocked nodes, bypassing individual interaction"
+          >
+            <RotateCcw className="w-3 h-3 text-emerald-400 animate-spin duration-[4000ms]" />
+            <span>Quick Reset ({computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked).length} Nodes)</span>
+          </button>
 
           <button
             onClick={() => {
