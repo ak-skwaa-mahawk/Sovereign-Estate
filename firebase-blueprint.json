@@ -1,0 +1,109 @@
+{
+  "entities": {
+    "VesselState": {
+      "title": "VesselState",
+      "description": "The structural and maintenance parameters of the FPT-Ω Synara Class vessel.",
+      "type": "object",
+      "properties": {
+        "repairCyclesCount": {
+          "type": "integer",
+          "description": "Total count of mechanical repair cycles executed."
+        },
+        "cumulativeNanitesDischarged": {
+          "type": "integer",
+          "description": "Total nanoliter volume of structural nanites injected."
+        },
+        "lastOverhaulCount": {
+          "type": "integer",
+          "description": "The repair cycle count at which the last subframe overhaul occurred."
+        },
+        "hullIntegrity": {
+          "type": "number",
+          "description": "Current structural integrity percentage."
+        },
+        "emergencyAutoRepair": {
+          "type": "boolean",
+          "description": "Indicates whether automatic diagnostic restoration is enabled."
+        },
+        "criticalModeEnabled": {
+          "type": "boolean",
+          "description": "Indicates if critical alarms trigger below threshold."
+        },
+        "criticalThreshold": {
+          "type": "number",
+          "description": "The hull integrity threshold for critical alarm state."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last parameter sync."
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the commanding officer who authorized this state."
+        }
+      },
+      "required": [
+        "repairCyclesCount",
+        "cumulativeNanitesDischarged",
+        "lastOverhaulCount",
+        "hullIntegrity",
+        "emergencyAutoRepair",
+        "updatedAt",
+        "userId"
+      ]
+    },
+    "VesselLog": {
+      "title": "VesselLog",
+      "description": "Event log entry of actions, anomalies, and structural repairs.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique event identifier."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Event timestamp."
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "INFO",
+            "ALERT",
+            "REPAIR",
+            "SUCCESS"
+          ],
+          "description": "Severity level of the event."
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Human-readable telemetry description of the event."
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the user associated with the event."
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "level",
+        "message",
+        "userId"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/vessel_state/FPT-Omega": {
+      "schema": "VesselState",
+      "description": "Global status tracking document for the commanding officer's vessel bridge."
+    },
+    "/users/{userId}/logs/{logId}": {
+      "schema": "VesselLog",
+      "description": "Historical sub-ledgers for individual vessel activities and repairs."
+    }
+  }
+}

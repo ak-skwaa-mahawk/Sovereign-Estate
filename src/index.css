@@ -7,3 +7,39 @@
   --font-display: "Space Grotesk", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
+
+@keyframes vessel-heartbeat {
+  0%, 100% {
+    transform: scale(1);
+  }
+  14% {
+    transform: scale(1.2);
+  }
+  28% {
+    transform: scale(1.05);
+  }
+  42% {
+    transform: scale(1.35);
+  }
+  70% {
+    transform: scale(1);
+  }
+}
+
+@keyframes ekg-sweep {
+  0% {
+    stroke-dashoffset: 120;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-vessel-heartbeat {
+  animation: vessel-heartbeat var(--pulse-speed, 1.2s) ease-in-out infinite;
+}
+
+.animate-ekg-sweep {
+  animation: ekg-sweep var(--pulse-speed, 1.2s) linear infinite;
+}
+

@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser(userId) {
+      return isSignedIn() 
+        && request.auth.uid == userId 
+        && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // VesselState Validator
+    function isValidVesselState(data) {
+      return data.keys().hasAll(['repairCyclesCount', 'cumulativeNanitesDischarged', 'lastOverhaulCount', 'hullIntegrity', 'emergencyAutoRepair', 'criticalModeEnabled', 'criticalThreshold', 'updatedAt', 'userId'])
+        && data.keys().size() == 9
+        && data.repairCyclesCount is int
+        && data.repairCyclesCount >= 0
+        && data.cumulativeNanitesDischarged is int
+        && data.cumulativeNanitesDischarged >= 0
+        && data.lastOverhaulCount is int
+        && data.lastOverhaulCount >= 0
+        && data.hullIntegrity is number
+        && data.hullIntegrity >= 0.0
+        && data.hullIntegrity <= 100.0
+        && data.emergencyAutoRepair is bool
+        && data.criticalModeEnabled is bool
+        && data.criticalThreshold is number
+        && data.userId is string
+        && data.userId == request.auth.uid
+        && data.updatedAt == request.time;
+    }
+
+    // VesselLog Validator
+    function isValidVesselLog(data) {
+      return data.keys().hasAll(['id', 'timestamp', 'level', 'message', 'userId'])
+        && data.keys().size() == 5
+        && data.id is string
+        && isValidId(data.id)
+        && data.timestamp == request.time
+        && data.level is string
+        && (data.level == 'INFO' || data.level == 'ALERT' || data.level == 'REPAIR' || data.level == 'SUCCESS')
+        && data.message is string
+        && data.message.size() <= 1000
+        && data.userId is string
+        && data.userId == request.auth.uid;
+    }
+
+    // Match rules for users/vessel_state
+    match /users/{userId}/vessel_state/{stateId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isVerifiedUser(userId) 
+        && isValidId(stateId)
+        && isValidVesselState(incoming());
+      allow update: if isVerifiedUser(userId)
+        && isValidId(stateId)
+        && isValidVesselState(incoming())
+        && incoming().userId == existing().userId; // Immutable owner UID
+      allow delete: if false; // Cannot delete core telemetry state
+    }
+
+    // Match rules for users/logs
+    match /users/{userId}/logs/{logId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isVerifiedUser(userId)
+        && isValidId(logId)
+        && isValidVesselLog(incoming());
+      allow update, delete: if false; // Logs are immutable audit trails
+    }
+  }
+}
