@@ -477,6 +477,7 @@ export default function App() {
   const [dragStartCoords, setDragStartCoords] = useState<{ x: number; y: number } | null>(null);
   const [dragCurrentCoords, setDragCurrentCoords] = useState<{ x: number; y: number } | null>(null);
   const [quadrantConfirmNodeId, setQuadrantConfirmNodeId] = useState<string | null>(null);
+  const [pingedQuadrant, setPingedQuadrant] = useState<{ quadNum: number; maxAvgStress: number; time: number } | null>(null);
   const navigationRingSvgRef = useRef<SVGSVGElement | null>(null);
   const [isDiagnosticMenuOpen, setIsDiagnosticMenuOpen] = useState<boolean>(false);
   const [logFilter, setLogFilter] = useState<'ALL' | 'INFO' | 'ALERT' | 'REPAIR' | 'SUCCESS'>('ALL');
@@ -794,6 +795,46 @@ export default function App() {
       };
     });
   }, [hullIntegrity, stepData?.step, criticalModeEnabled, criticalThreshold, lockedDiagnosticNodes, dischargedDiagnosticNodes]);
+
+  // Ping Sector handler: calculates aggregate stress for each quadrant and highlights the peak load sector
+  const handlePingSector = useCallback(() => {
+    const quadTotals: Record<number, { sum: number; count: number; ids: string[] }> = {
+      1: { sum: 0, count: 0, ids: [] },
+      2: { sum: 0, count: 0, ids: [] },
+      3: { sum: 0, count: 0, ids: [] },
+      4: { sum: 0, count: 0, ids: [] }
+    };
+
+    computedStressZones.forEach((zone) => {
+      const normAngle = ((zone.angle % 360) + 360) % 360;
+      const quadNum = Math.floor(normAngle / 90) + 1;
+      quadTotals[quadNum].sum += zone.stress;
+      quadTotals[quadNum].count += 1;
+      quadTotals[quadNum].ids.push(zone.id);
+    });
+
+    let topQuadNum = 1;
+    let topAvgStress = -1;
+
+    [1, 2, 3, 4].forEach((q) => {
+      const count = quadTotals[q].count;
+      const avg = count > 0 ? quadTotals[q].sum / count : 0;
+      if (avg > topAvgStress) {
+        topAvgStress = avg;
+        topQuadNum = q;
+      }
+    });
+
+    const targetIds = quadTotals[topQuadNum].ids;
+    const now = Date.now();
+    setPingedQuadrant({ quadNum: topQuadNum, maxAvgStress: topAvgStress, time: now });
+
+    // Select all nodes in the peak aggregate stress quadrant for immediate interaction
+    setSelectedDiagnosticNodeIds(targetIds);
+
+    addLog('INFO', `Ping Sector: Pinged Quadrant Q${topQuadNum} with peak aggregate stress (${(topAvgStress * 100).toFixed(1)}% load).`);
+    showBanner(`📡 SECTOR PING: Quadrant Q${topQuadNum} highlighted — Peak aggregate stress detected (${(topAvgStress * 100).toFixed(1)}% load)!`);
+  }, [computedStressZones, addLog, showBanner]);
 
   const avgWeeklyHullIntegrity = useMemo(() => {
     if (!telemetry || telemetry.length === 0) return 96.50;
@@ -2175,6 +2216,31 @@ export default function App() {
           );
         })()}
 
+        {/* Ping Sector Radar Beacon Overlay */}
+        {activeStress && pingedQuadrant && (Date.now() - pingedQuadrant.time < 12000) && (() => {
+          const qNum = pingedQuadrant.quadNum;
+          const midAngle = (qNum - 1) * 90 + 45;
+          const midRad = (midAngle * Math.PI) / 180;
+          const qx_rot = (r + 15) * Math.cos(midRad);
+          const qy_rot = (r + 15) * Math.cos(tilt) * Math.sin(midRad);
+          const rotAngle = (23.5 * Math.PI) / 180;
+          const qx = cx + (qx_rot * Math.cos(rotAngle) - qy_rot * Math.sin(rotAngle));
+          const qy = cy + (qx_rot * Math.sin(rotAngle) + qy_rot * Math.cos(rotAngle));
+
+          return (
+            <g key="ping-sector-beacon-overlay" className="pointer-events-none">
+              <circle cx={qx} cy={qy} r="42" fill="none" stroke="#f59e0b" strokeWidth="2.5" className="animate-ping" opacity="0.85" />
+              <circle cx={qx} cy={qy} r="54" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="6 4" className="animate-spin duration-[2500ms]" />
+              <g transform={`translate(${qx}, ${qy})`}>
+                <rect x="-56" y="-12" width="112" height="24" fill="#030712" stroke="#f59e0b" strokeWidth="1.5" rx="4" opacity="0.95" />
+                <text x="0" y="4" fill="#fde68a" fontFamily="monospace" fontSize="8.5" fontWeight="extrabold" textAnchor="middle">
+                  📡 PING: Q{qNum} ({(pingedQuadrant.maxAvgStress * 100).toFixed(0)}% LOAD)
+                </text>
+              </g>
+            </g>
+          );
+        })()}
+
         {activeStress && computedStressZones.map((zone, idx) => {
           const rad = (zone.angle * Math.PI) / 180;
           const rx = r - 15;
@@ -2193,6 +2259,10 @@ export default function App() {
 
           const recentToggle = recentlyToggledLockNodes[zone.id];
           const isRecentlyToggled = recentToggle && (Date.now() - recentToggle.time < 3000);
+
+          const normAngle = ((zone.angle % 360) + 360) % 360;
+          const zoneQuadNum = Math.floor(normAngle / 90) + 1;
+          const isPingHighlighted = pingedQuadrant && (Date.now() - pingedQuadrant.time < 12000) && (pingedQuadrant.quadNum === zoneQuadNum);
 
           return (
             <g 
@@ -2260,6 +2330,28 @@ export default function App() {
                     paintOrder="stroke"
                   >
                     ✓ SELECTED
+                  </text>
+                </g>
+              )}
+
+              {/* Ping Sector Radar Pulse Highlight */}
+              {isPingHighlighted && (
+                <g pointerEvents="none">
+                  <circle cx={x} cy={y} r={34} fill="none" stroke="#f59e0b" strokeWidth="2.5" className="animate-ping" opacity="0.9" />
+                  <circle cx={x} cy={y} r={42} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 2" className="animate-spin duration-[3000ms]" />
+                  <text 
+                    x={x} 
+                    y={y + 30} 
+                    fill="#fde68a" 
+                    fontFamily="monospace" 
+                    fontSize="7" 
+                    fontWeight="extrabold" 
+                    textAnchor="middle" 
+                    stroke="#000" 
+                    strokeWidth="1.5" 
+                    paintOrder="stroke"
+                  >
+                    📡 HIGHEST STRESS
                   </text>
                 </g>
               )}
@@ -2712,13 +2804,21 @@ export default function App() {
           <div className="flex gap-1 text-[8px]">
             <button
               onClick={() => setSelectedDiagnosticNodeIds(computedStressZones.map(z => z.id))}
-              className="flex-1 py-1 px-1.5 bg-cyan-950/50 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-500/30 rounded cursor-pointer font-bold uppercase text-center"
+              className="flex-1 py-1 px-1 bg-cyan-950/50 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-500/30 rounded cursor-pointer font-bold uppercase text-center"
             >
-              Select All (8)
+              All (8)
+            </button>
+            <button
+              onClick={handlePingSector}
+              className="flex-1 py-1 px-1 bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border border-amber-500/30 rounded cursor-pointer font-bold uppercase text-center flex items-center justify-center gap-1"
+              title="Ping sector with peak aggregate stress"
+            >
+              <Radio className="w-2.5 h-2.5 text-amber-400" />
+              <span>Ping</span>
             </button>
             <button
               onClick={() => setSelectedDiagnosticNodeIds([])}
-              className="flex-1 py-1 px-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 rounded cursor-pointer font-bold uppercase text-center"
+              className="flex-1 py-1 px-1 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 rounded cursor-pointer font-bold uppercase text-center"
             >
               Clear
             </button>
@@ -2806,9 +2906,19 @@ export default function App() {
           </button>
         </div>
       ) : (
-        <div className="absolute top-3 left-3 z-30 bg-slate-950/85 border border-cyan-500/30 px-2 py-1.5 rounded shadow text-[8px] font-mono text-cyan-300 flex items-center gap-1.5 select-none pointer-events-none">
-          <span className="animate-pulse">🎯</span>
-          <span>Click & drag on ring to select multiple nodes</span>
+        <div className="absolute top-3 left-3 z-30 flex flex-col gap-1.5 items-start">
+          <div className="bg-slate-950/85 border border-cyan-500/30 px-2 py-1.5 rounded shadow text-[8px] font-mono text-cyan-300 flex items-center gap-1.5 select-none pointer-events-none">
+            <span className="animate-pulse">🎯</span>
+            <span>Click & drag on ring to select multiple nodes</span>
+          </div>
+          <button
+            onClick={handlePingSector}
+            className="bg-slate-950/90 hover:bg-amber-950/80 active:bg-amber-900/90 border border-amber-500/40 hover:border-amber-500/70 text-amber-300 hover:text-white px-2 py-1 rounded shadow-lg text-[8px] font-mono font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all select-none"
+            title="Ping Navigation Ring to temporarily highlight quadrant with highest aggregate stress"
+          >
+            <Radio className="w-3 h-3 text-amber-400 animate-pulse" />
+            <span>Ping Sector</span>
+          </button>
         </div>
       )}
 
@@ -3978,6 +4088,14 @@ export default function App() {
                       />
                       <span>Granular Heatmap</span>
                     </label>
+                    <button
+                      onClick={handlePingSector}
+                      className="flex items-center gap-1 px-2 py-1 bg-amber-500/20 hover:bg-amber-500/35 active:bg-amber-500/50 text-amber-300 hover:text-white border border-amber-500/40 hover:border-amber-500/70 rounded-sm font-mono text-[9px] uppercase tracking-wider cursor-pointer transition-all shadow-sm select-none"
+                      title="Ping Navigation Ring to temporarily highlight quadrant with highest aggregate stress"
+                    >
+                      <Radio className="w-3 h-3 text-amber-400 animate-pulse" />
+                      <span>Ping Sector</span>
+                    </button>
                     <span className="text-[9px] font-mono tracking-widest text-amber-500 border border-amber-500/20 px-2 py-1 bg-amber-500/5 rounded-sm uppercase">23.5° Tilt</span>
                   </div>
                 </div>
