@@ -3,6 +3,7 @@ import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI, Type } from '@google/genai';
 
 // In-memory sovereign state
 let resonance = 85.43;
@@ -16,6 +17,22 @@ function getLiveEarnings() {
   return baseEarnings + (elapsedSeconds * 0.000003);
 }
 
+// Helper to get Gemini client
+function getGeminiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY environment variable is missing.');
+  }
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -24,6 +41,270 @@ app.use(express.json());
 // API routes first
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', system: 'Sovereign Manifold' });
+});
+
+// Gemini AI Vessel Diagnostic Endpoint
+app.post('/api/gemini/analyze-vessel', async (req, res) => {
+  try {
+    const ai = getGeminiClient();
+    const { hullIntegrity, computedStressZones, nanitesUsed, resonance: vesselResonance } = req.body || {};
+
+    const prompt = `Analyze current telemetry for the FPT-Ω Synara Class vessel bridge:
+- Hull Integrity: ${hullIntegrity}%
+- Sovereign Resonance: ${vesselResonance || resonance}%
+- Nanites Discharged: ${nanitesUsed || 0} nL
+- Diagnostic Nodes: ${JSON.stringify(computedStressZones || [])}
+
+Provide a tactical AI diagnostic assessment and return a structured JSON response.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: prompt,
+      config: {
+        systemInstruction: 'You are SYNARA-AI, the central tactical diagnostic core of the Synara Class vessel. Analyze node stress levels, hull integrity, and nanite flow. Output strict JSON with overallStatus (NOMINAL, ELEVATED, or CRITICAL), executiveSummary, priorityNodeRepairIds (array of strings matching node ids), recommendedActions (array of strings), and calculatedSystemEfficiency (number 0-100).',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            overallStatus: { type: Type.STRING, description: "NOMINAL, ELEVATED, or CRITICAL" },
+            executiveSummary: { type: Type.STRING, description: "A high-level tactical diagnostic summary" },
+            priorityNodeRepairIds: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "IDs of nodes that urgently require nanite discharge"
+            },
+            recommendedActions: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Actionable bridge commands for the commander"
+            },
+            calculatedSystemEfficiency: { type: Type.NUMBER, description: "Overall vessel efficiency percentage" }
+          },
+          required: ["overallStatus", "executiveSummary", "priorityNodeRepairIds", "recommendedActions", "calculatedSystemEfficiency"]
+        }
+      }
+    });
+
+    const resultText = response.text || '{}';
+    const parsed = JSON.parse(resultText);
+    res.json({ success: true, analysis: parsed });
+  } catch (error: any) {
+    console.error('Gemini vessel analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to complete AI vessel analysis.'
+    });
+  }
+});
+
+// Gemini AI Copilot Chat, Grounding & Low-Latency Endpoint
+app.post('/api/gemini/copilot-chat', async (req, res) => {
+  try {
+    const ai = getGeminiClient();
+    const { message, history, model, mode, vesselState } = req.body || {};
+
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message parameter is required.' });
+    }
+
+    // Select model based on user request or mode
+    let modelName = 'gemini-3.5-flash';
+    if (model === 'gemini-3.1-pro-preview' || mode === 'complex') {
+      modelName = 'gemini-3.1-pro-preview';
+    } else if (model === 'gemini-3.1-flash-lite' || mode === 'fast') {
+      modelName = 'gemini-3.1-flash-lite';
+    } else if (model === 'gemini-3.5-flash') {
+      modelName = 'gemini-3.5-flash';
+    }
+
+    const systemInstruction = `You are SYNARA-AI, the tactical AI Copilot and Bridge Intelligence Officer for the FPT-Ω Synara Class Vessel (Hull #99733-Q).
+Current Vessel Context:
+- Hull Integrity: ${vesselState?.hullIntegrity ?? 100}%
+- Vessel Resonance: ${vesselState?.resonance ?? resonance}%
+- Selected AI Model: ${modelName}
+- Operational Mode: ${mode || 'Standard Bridge Operations'}
+
+Tone & Persona:
+Authoritative, hyper-precise, cybernetic, helpful, and concise. Address the user as "Commander". Reference bridge systems like the Navigation Ring, Nanite Discharge, Trinity Waves, Polaris Pivot, and Fireseed Drive where appropriate.`;
+
+    const config: any = {
+      systemInstruction
+    };
+
+    if (mode === 'search') {
+      modelName = 'gemini-3.5-flash';
+      config.tools = [{ googleSearch: {} }];
+    } else if (mode === 'maps') {
+      modelName = 'gemini-3.5-flash';
+      config.tools = [{ googleMaps: {} }];
+    }
+
+    // Thinking mode for complex reasoning if model is gemini-3.1-pro-preview or mode is thinking
+    if (modelName === 'gemini-3.1-pro-preview' && mode === 'thinking') {
+      config.thinkingConfig = { thinkingLevel: 'HIGH' };
+    }
+
+    // Format multi-turn conversation history
+    let contentsPrompt: any = message;
+    if (history && Array.isArray(history) && history.length > 0) {
+      const formattedHistory = history.map((h: { role: string; text: string }) => 
+        `${h.role === 'user' ? 'Commander' : 'SYNARA-AI'}: ${h.text}`
+      ).join('\n');
+      contentsPrompt = `Previous Tactical Log:\n${formattedHistory}\n\nCommander: ${message}\nSYNARA-AI:`;
+    }
+
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: contentsPrompt,
+      config
+    });
+
+    const text = response.text || 'No response generated.';
+
+    // Extract search or maps grounding metadata
+    let groundingSources: Array<{ title: string; url: string }> = [];
+    const candidate = response.candidates?.[0];
+    if (candidate?.groundingMetadata) {
+      const chunks = candidate.groundingMetadata.groundingChunks;
+      if (chunks && Array.isArray(chunks)) {
+        groundingSources = chunks
+          .filter((c: any) => c?.web?.uri || c?.maps?.uri)
+          .map((c: any) => ({
+            title: c.web?.title || c.maps?.title || c.web?.uri || c.maps?.uri || 'Source',
+            url: c.web?.uri || c.maps?.uri || '#'
+          }));
+      }
+    }
+
+    res.json({
+      success: true,
+      text,
+      modelUsed: modelName,
+      groundingSources,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error('Gemini copilot chat error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to generate AI response.'
+    });
+  }
+});
+
+// Gemini Multimodal Endpoint (Image & Video Analysis using gemini-3.1-pro-preview)
+app.post('/api/gemini/analyze-multimodal', async (req, res) => {
+  try {
+    const ai = getGeminiClient();
+    const { fileData, mimeType, prompt, mediaType } = req.body || {};
+
+    if (!fileData || !mimeType) {
+      return res.status(400).json({ error: 'fileData (base64) and mimeType are required.' });
+    }
+
+    const defaultPrompt = mediaType === 'video' 
+      ? 'Analyze this tactical flight recorder video stream for key events, anomaly timestamp logs, structural stress, and tactical recommendations.'
+      : 'Analyze this vessel hull image / sector scan for structural damage, anomaly signatures, and priority repair nodes.';
+
+    const systemInstruction = 'You are SYNARA-AI Multimodal Tactical Scanner. Provide a detailed, highly technical diagnostic evaluation based on visual and temporal evidence.';
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.1-pro-preview',
+      contents: [
+        {
+          inlineData: {
+            mimeType,
+            data: fileData
+          }
+        },
+        prompt || defaultPrompt
+      ],
+      config: {
+        systemInstruction
+      }
+    });
+
+    res.json({
+      success: true,
+      text: response.text || 'Multimodal scan complete with no output.',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error('Multimodal analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to analyze media file.'
+    });
+  }
+});
+
+// Gemini Image Generation & Editing Endpoint (gemini-3-pro-image-preview & gemini-3.1-flash-image-preview)
+app.post('/api/gemini/generate-image', async (req, res) => {
+  try {
+    const ai = getGeminiClient();
+    const { prompt, size, action, sourceImageData, editInstruction } = req.body || {};
+
+    if (!prompt && !editInstruction) {
+      return res.status(400).json({ error: 'Prompt or edit instructions are required.' });
+    }
+
+    // Standardize size: 1K, 2K, 4K
+    const validSizes = ['1K', '2K', '4K'];
+    const imageSize = validSizes.includes(size) ? size : '1K';
+
+    if (action === 'edit' && sourceImageData) {
+      // Image editing using gemini-3.1-flash-image-preview or gemini-3-pro-image-preview
+      const response = await ai.models.generateImages({
+        model: 'gemini-3.1-flash-image-preview',
+        prompt: editInstruction || prompt || 'Modify and enhance this tactical vessel asset',
+        config: {
+          numberOfImages: 1,
+          outputMimeType: 'image/png'
+        }
+      });
+
+      const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
+      if (!imageBytes) {
+        throw new Error('Image editing model returned empty output.');
+      }
+
+      return res.json({
+        success: true,
+        imageUrl: `data:image/png;base64,${imageBytes}`,
+        modelUsed: 'gemini-3.1-flash-image-preview',
+        size: imageSize
+      });
+    }
+
+    // High quality image generation using gemini-3-pro-image-preview
+    const response = await ai.models.generateImages({
+      model: 'gemini-3-pro-image-preview',
+      prompt: `Futuristic sci-fi tactical vessel blueprint UI or spatial nebula: ${prompt}`,
+      config: {
+        numberOfImages: 1,
+        outputMimeType: 'image/png',
+        imageSize: imageSize as any
+      }
+    });
+
+    const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
+    if (!imageBytes) {
+      throw new Error('Image generation returned empty image output.');
+    }
+
+    res.json({
+      success: true,
+      imageUrl: `data:image/png;base64,${imageBytes}`,
+      modelUsed: 'gemini-3-pro-image-preview',
+      size: imageSize
+    });
+  } catch (error: any) {
+    console.error('Image generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to generate or edit image.'
+    });
+  }
 });
 
 // 1. Sovereign Ledger Endpoint

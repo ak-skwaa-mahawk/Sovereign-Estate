@@ -52,6 +52,12 @@ export const ShortcutsHelpModal: React.FC<ShortcutsHelpModalProps> = ({ isOpen, 
       icon: <Wrench className="w-3.5 h-3.5 text-emerald-400" />
     },
     {
+      keys: ['Shift', 'B'],
+      description: 'Bulk repair all selected diagnostic nodes on the navigation ring',
+      category: 'Diagnostics & Repair',
+      icon: <Wrench className="w-3.5 h-3.5 text-teal-400" />
+    },
+    {
       keys: ['Shift', 'L'],
       description: 'Batch lock all diagnostic nodes exceeding 85% stress threshold',
       category: 'Diagnostics & Repair',
