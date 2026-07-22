@@ -62,7 +62,10 @@ import {
   Clock,
   Lock,
   Unlock,
-  Unlink
+  Unlink,
+  Share2,
+  Copy,
+  Check
 } from 'lucide-react';
 
 interface TelemetryPoint {
@@ -478,6 +481,7 @@ export default function App() {
   const [dragCurrentCoords, setDragCurrentCoords] = useState<{ x: number; y: number } | null>(null);
   const [quadrantConfirmNodeId, setQuadrantConfirmNodeId] = useState<string | null>(null);
   const [pingedQuadrant, setPingedQuadrant] = useState<{ quadNum: number; maxAvgStress: number; time: number } | null>(null);
+  const [isShareCopied, setIsShareCopied] = useState<boolean>(false);
   const navigationRingSvgRef = useRef<SVGSVGElement | null>(null);
   const [isDiagnosticMenuOpen, setIsDiagnosticMenuOpen] = useState<boolean>(false);
   const [logFilter, setLogFilter] = useState<'ALL' | 'INFO' | 'ALERT' | 'REPAIR' | 'SUCCESS'>('ALL');
@@ -836,6 +840,84 @@ export default function App() {
     showBanner(`📡 SECTOR PING: Quadrant Q${topQuadNum} highlighted — Peak aggregate stress detected (${(topAvgStress * 100).toFixed(1)}% load)!`);
   }, [computedStressZones, addLog, showBanner]);
 
+  // Dynamic Heartbeat System Vitality Configuration
+  const heartbeatDetails = useMemo(() => {
+    // hullIntegrity ranges from 90.0 to 100.0
+    if (hullIntegrity >= 96.0) {
+      return {
+        bpm: Math.round(60 + (hullIntegrity - 96.0) * 2.5), // ~60 to 70 BPM
+        colorClass: 'text-emerald-400',
+        glowColor: '#10b981',
+        pulseSpeed: '1.2s',
+        statusText: 'NOMINAL VITALITY',
+        bgClass: 'bg-emerald-500/10 border-emerald-500/20'
+      };
+    } else if (hullIntegrity >= 93.0) {
+      return {
+        bpm: Math.round(80 + (96.0 - hullIntegrity) * 6), // ~80 to 98 BPM
+        colorClass: 'text-amber-500',
+        glowColor: '#f59e0b',
+        pulseSpeed: '0.8s',
+        statusText: 'STRESSED DEVIATION',
+        bgClass: 'bg-amber-500/10 border-amber-500/20'
+      };
+    } else {
+      return {
+        bpm: Math.round(110 + (93.0 - hullIntegrity) * 16), // ~110 to 158+ BPM
+        colorClass: 'text-red-500',
+        glowColor: '#ef4444',
+        pulseSpeed: '0.45s',
+        statusText: 'CRITICAL INSTABILITY',
+        bgClass: 'bg-red-500/10 border-red-500/20 animate-pulse'
+      };
+    }
+  }, [hullIntegrity]);
+
+  // Share Bridge Status handler: copies formatted summary of hull integrity, resonance, & active diagnostic array status
+  const handleShareBridgeStatus = useCallback(() => {
+    const totalNodes = computedStressZones.length;
+    const lockedCount = computedStressZones.filter(z => z.locked).length;
+    const highStressCount = computedStressZones.filter(z => z.stress > 0.8).length;
+    const avgStress = (computedStressZones.reduce((acc, z) => acc + z.stress, 0) / (totalNodes || 1) * 100).toFixed(1);
+
+    const nodeDetails = computedStressZones
+      .map(z => `  • [${z.name}]: ${(z.stress * 100).toFixed(1)}% stress ${z.locked ? '🔒 [LOCKED]' : ''}`)
+      .join('\n');
+
+    const summaryText = `================================================
+  SOVEREIGN MANIFOL - BRIDGE STATUS REPORT
+================================================
+Timestamp: ${new Date().toLocaleString()}
+Epoch: 842.1 | Vessel Class: Synara FPT-Ω
+
+[VITAL STATS]
+• Hull Integrity: ${hullIntegrity.toFixed(1)}% (${hullIntegrity < 50 ? 'CRITICAL' : hullIntegrity < 75 ? 'WARNING' : 'STABLE'})
+• Quantum Resonance: ${ledger.resonance.toFixed(2)}% (Target Vitality: ${(ledger.resonance / 100).toFixed(4)})
+• Vessel Heartbeat: ${heartbeatDetails.bpm} BPM (${heartbeatDetails.statusText})
+• Network Link: ${wsConnected ? 'ONLINE (WebSocket Linked)' : 'DEMO LINKED (Autonomous Stream)'}
+
+[DIAGNOSTIC ARRAY OVERVIEW]
+• Monitored Nodes: ${totalNodes}
+• Locked Nodes: ${lockedCount} / ${totalNodes}
+• High-Strain Nodes (>80%): ${highStressCount}
+• Aggregate Strain Load: ${avgStress}%
+
+[ACTIVE DIAGNOSTIC NODE BREAKDOWN]
+${nodeDetails}
+================================================`;
+
+    navigator.clipboard.writeText(summaryText).then(() => {
+      setIsShareCopied(true);
+      setTimeout(() => setIsShareCopied(false), 2500);
+      addLog('INFO', 'Share Bridge Status: Summary successfully copied to clipboard.');
+      showBanner('📋 BRIDGE STATUS COPIED: Full status report copied to clipboard!');
+    }).catch(err => {
+      console.error('Clipboard copy failed:', err);
+      addLog('WARN', 'Share Bridge Status: Failed to copy summary to clipboard.');
+      showBanner('⚠️ FAILED TO COPY: Clipboard permission blocked.');
+    });
+  }, [computedStressZones, hullIntegrity, ledger.resonance, heartbeatDetails, wsConnected, addLog, showBanner]);
+
   const avgWeeklyHullIntegrity = useMemo(() => {
     if (!telemetry || telemetry.length === 0) return 96.50;
     const mappedValues = telemetry.map(p => {
@@ -1090,13 +1172,36 @@ export default function App() {
           showBanner(`ℹ️ SHIFT+U RECOVERY: No locked nodes found in current selection.`);
         }
       }
+
+      // Trigger when Shift+L is pressed (automatically selects and locks all diagnostic nodes reporting stress > 85%)
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'L' || e.key === 'l')) {
+        e.preventDefault();
+        const highStressNodes = computedStressZones.filter(z => z.stress > 0.85);
+        if (highStressNodes.length > 0) {
+          const highStressIds = highStressNodes.map(n => n.id);
+          
+          setSelectedDiagnosticNodeIds(highStressIds);
+
+          setLockedDiagnosticNodes(prev => {
+            const next = { ...prev };
+            highStressIds.forEach(id => { next[id] = true; });
+            return next;
+          });
+
+          triggerLockAnimation(highStressIds, true);
+          addLog('ALERT', `Shift+L Emergency Lock: Selected and locked ${highStressIds.length} node(s) exceeding 85% stress threshold.`);
+          showBanner(`🔒 SHIFT+L EMERGENCY LOCK: Selected & locked ${highStressIds.length} critical node(s) (>85% stress)!`);
+        } else {
+          showBanner(`ℹ️ SHIFT+L LOCK: No diagnostic nodes currently exceed 85% stress threshold.`);
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hullIntegrity, isRepairing, handleRepair, selectedDiagnosticNodeIds, computedStressZones, lockedDiagnosticNodes, triggerLockAnimation, addLog, showBanner]);
+  }, [hullIntegrity, isRepairing, handleRepair, selectedDiagnosticNodeIds, setSelectedDiagnosticNodeIds, computedStressZones, lockedDiagnosticNodes, triggerLockAnimation, addLog, showBanner]);
 
   // 3c. Real-time Hull Integrity fluctuation anchored to system vitality
   useEffect(() => {
@@ -2379,6 +2484,57 @@ export default function App() {
                 </g>
               )}
               
+              {/* Persistent Dimmed Lock Overlay for Locked Nodes (visualizes locked state even when unselected) */}
+              {zone.locked && (
+                <g pointerEvents="none" className="transition-opacity duration-300">
+                  <circle 
+                    cx={x} 
+                    cy={y} 
+                    r={26} 
+                    fill="rgba(15, 23, 42, 0.75)" 
+                    stroke="#2563eb" 
+                    strokeWidth={isSelected ? "1.8" : "1.2"} 
+                    strokeDasharray="3 2" 
+                    opacity={isSelected ? 0.6 : 0.95} 
+                  />
+                  <circle 
+                    cx={x} 
+                    cy={y} 
+                    r={18} 
+                    fill="rgba(30, 58, 138, 0.40)" 
+                    stroke="#60a5fa" 
+                    strokeWidth="0.8" 
+                    opacity={isSelected ? 0.5 : 0.85} 
+                  />
+                  {!isSelected && (
+                    <g transform={`translate(${x}, ${y - 22})`}>
+                      <rect 
+                        x="-30" 
+                        y="-8" 
+                        width="60" 
+                        height="12" 
+                        fill="#030712" 
+                        stroke="#3b82f6" 
+                        strokeWidth="0.8" 
+                        rx="3" 
+                        opacity="0.9" 
+                      />
+                      <text 
+                        x="0" 
+                        y="1" 
+                        fill="#93c5fd" 
+                        fontFamily="monospace" 
+                        fontSize="6" 
+                        fontWeight="extrabold" 
+                        textAnchor="middle"
+                      >
+                        🔒 LOCKED
+                      </text>
+                    </g>
+                  )}
+                </g>
+              )}
+
               {/* Heat glow circles */}
               <circle 
                 cx={x} 
@@ -2860,9 +3016,10 @@ export default function App() {
                 showBanner(`🔒 BATCH LOCK: Successfully locked ${selectedDiagnosticNodeIds.length} selected nodes!`);
               }}
               className="py-1.5 px-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-200 border border-blue-500/40 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
+              title="Lock selected nodes (Global Shortcut Shift+L selects & locks all nodes >85% stress)"
             >
               <Lock className="w-2.5 h-2.5 text-blue-400" />
-              <span>Lock</span>
+              <span>Lock (Shift+L)</span>
             </button>
 
             <button
@@ -3216,39 +3373,6 @@ export default function App() {
     );
   };
 
-  // Dynamic Heartbeat System Vitality Configuration
-  const heartbeatDetails = useMemo(() => {
-    // hullIntegrity ranges from 90.0 to 100.0
-    if (hullIntegrity >= 96.0) {
-      return {
-        bpm: Math.round(60 + (hullIntegrity - 96.0) * 2.5), // ~60 to 70 BPM
-        colorClass: 'text-emerald-400',
-        glowColor: '#10b981',
-        pulseSpeed: '1.2s',
-        statusText: 'NOMINAL VITALITY',
-        bgClass: 'bg-emerald-500/10 border-emerald-500/20'
-      };
-    } else if (hullIntegrity >= 93.0) {
-      return {
-        bpm: Math.round(80 + (96.0 - hullIntegrity) * 6), // ~80 to 98 BPM
-        colorClass: 'text-amber-500',
-        glowColor: '#f59e0b',
-        pulseSpeed: '0.8s',
-        statusText: 'STRESSED DEVIATION',
-        bgClass: 'bg-amber-500/10 border-amber-500/20'
-      };
-    } else {
-      return {
-        bpm: Math.round(110 + (93.0 - hullIntegrity) * 16), // ~110 to 158+ BPM
-        colorClass: 'text-red-500',
-        glowColor: '#ef4444',
-        pulseSpeed: '0.45s',
-        statusText: 'CRITICAL INSTABILITY',
-        bgClass: 'bg-red-500/10 border-red-500/20 animate-pulse'
-      };
-    }
-  }, [hullIntegrity]);
-
   return (
     <div className="bg-[#050505] text-slate-300 min-h-screen font-sans antialiased selection:bg-amber-500/30 selection:text-white">
       {/* Dynamic Global Notification Banner */}
@@ -3369,33 +3493,53 @@ export default function App() {
             </div>
           </div>
 
-          {/* Unified Tab Selector */}
-          <div className="flex flex-col items-end gap-1">
-            <div className="bg-black/40 p-1 rounded-sm border border-white/10 flex gap-1 font-mono text-xs">
+          {/* Unified Controls & Tab Selector */}
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setActiveTab('council')}
-                className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
-                  activeTab === 'council' 
-                    ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
-                    : 'text-slate-400 hover:text-white'
-                }`}
+                onClick={handleShareBridgeStatus}
+                className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
+                title="Copy current hull integrity, resonance levels, and active diagnostic status summary to clipboard"
               >
-                <Table className="w-3.5 h-3.5" />
-                Sovereign Council Dashboard
+                {isShareCopied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400 font-bold">Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Share Bridge Status</span>
+                  </>
+                )}
               </button>
-              <button
-                onClick={() => setActiveTab('bridge')}
-                className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
-                  activeTab === 'bridge' 
-                    ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Navigation className="w-3.5 h-3.5" />
-                FPT-Ω Vessel Bridge
-              </button>
+
+              <div className="bg-black/40 p-1 rounded-sm border border-white/10 flex gap-1 font-mono text-xs">
+                <button
+                  onClick={() => setActiveTab('council')}
+                  className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+                    activeTab === 'council' 
+                      ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Table className="w-3.5 h-3.5" />
+                  Sovereign Council Dashboard
+                </button>
+                <button
+                  onClick={() => setActiveTab('bridge')}
+                  className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+                    activeTab === 'bridge' 
+                      ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Navigation className="w-3.5 h-3.5" />
+                  FPT-Ω Vessel Bridge
+                </button>
+              </div>
             </div>
-            <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase mr-1">Shortcuts: Ctrl+T (Toggle View) | Shift+R (Manual Repair)</span>
+            <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase mr-1">Shortcuts: Ctrl+T (Toggle View) | Shift+R (Manual Repair) | Shift+L (Lock Critical) | Shift+U (Unlock Selection)</span>
           </div>
         </header>
 
