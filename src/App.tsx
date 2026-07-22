@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback, CSSProperties, MouseEvent } from 'react';
 import { jsPDF } from 'jspdf';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
+import { WorkspaceHub } from './components/WorkspaceHub';
 import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
 import { 
   signInWithPopup, 
@@ -206,6 +207,13 @@ export default function App() {
   const [showNotification, setShowNotification] = useState<string | null>(null);
   const [isOverhaulConfirmOpen, setIsOverhaulConfirmOpen] = useState<boolean>(false);
   const [isClearLogsConfirmOpen, setIsClearLogsConfirmOpen] = useState<boolean>(false);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState<boolean>(false);
+  const [batchConfirmState, setBatchConfirmState] = useState<{
+    isOpen: boolean;
+    actionType: 'lock' | 'unlock';
+    targetNodeIds: string[];
+  } | null>(null);
   const [logsClearedAt, setLogsClearedAt] = useState<number>(() => {
     const saved = localStorage.getItem('logs_cleared_at');
     return saved ? parseInt(saved, 10) : 0;
@@ -412,8 +420,18 @@ export default function App() {
 
   const handleGoogleSignIn = async () => {
     const provider = new GoogleAuthProvider();
+    provider.addScope('https://www.googleapis.com/auth/drive');
+    provider.addScope('https://www.googleapis.com/auth/spreadsheets');
+    provider.addScope('https://mail.google.com/');
+    provider.addScope('https://www.googleapis.com/auth/documents');
     try {
-      await signInWithPopup(auth, provider);
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGoogleAccessToken(credential.accessToken);
+        addLog('SUCCESS', 'Google Workspace access authorized! Drive, Sheets, Gmail, & Docs linked.');
+        showBanner('🌌 GOOGLE WORKSPACE CONNECTED: Drive, Sheets, Gmail & Docs active!');
+      }
     } catch (err) {
       console.error('Sign-in failed:', err);
       addLog('ALERT', 'Cloud authentication failed. Standalone backup remains active.');
@@ -918,6 +936,76 @@ ${nodeDetails}
     });
   }, [computedStressZones, hullIntegrity, ledger.resonance, heartbeatDetails, wsConnected, addLog, showBanner]);
 
+  // Batch Lock/Unlock helper functions with confirmation prompt when > 5 nodes selected
+  const executeBatchLock = useCallback((nodeIds: string[]) => {
+    if (nodeIds.length === 0) return;
+
+    if (nodeIds.length > 5) {
+      setBatchConfirmState({
+        isOpen: true,
+        actionType: 'lock',
+        targetNodeIds: nodeIds
+      });
+    } else {
+      setLockedDiagnosticNodes(prev => {
+        const next = { ...prev };
+        nodeIds.forEach(id => { next[id] = true; });
+        return next;
+      });
+      triggerLockAnimation(nodeIds, true);
+      addLog('INFO', `Batch Lock: Locked ${nodeIds.length} diagnostic node(s).`);
+      showBanner(`🔒 BATCH LOCK: Successfully locked ${nodeIds.length} node(s)!`);
+    }
+  }, [triggerLockAnimation, addLog, showBanner]);
+
+  const executeBatchUnlock = useCallback((nodeIds: string[]) => {
+    if (nodeIds.length === 0) return;
+
+    if (nodeIds.length > 5) {
+      setBatchConfirmState({
+        isOpen: true,
+        actionType: 'unlock',
+        targetNodeIds: nodeIds
+      });
+    } else {
+      setLockedDiagnosticNodes(prev => {
+        const next = { ...prev };
+        nodeIds.forEach(id => { next[id] = false; });
+        return next;
+      });
+      triggerLockAnimation(nodeIds, false);
+      addLog('INFO', `Batch Unlock: Unlocked ${nodeIds.length} diagnostic node(s).`);
+      showBanner(`🔓 BATCH UNLOCK: Successfully unlocked ${nodeIds.length} node(s)!`);
+    }
+  }, [triggerLockAnimation, addLog, showBanner]);
+
+  const handleConfirmBatchAction = useCallback(() => {
+    if (!batchConfirmState || !batchConfirmState.targetNodeIds.length) return;
+    const { actionType, targetNodeIds } = batchConfirmState;
+
+    if (actionType === 'lock') {
+      setLockedDiagnosticNodes(prev => {
+        const next = { ...prev };
+        targetNodeIds.forEach(id => { next[id] = true; });
+        return next;
+      });
+      triggerLockAnimation(targetNodeIds, true);
+      addLog('INFO', `Batch Lock Authorized: Locked ${targetNodeIds.length} diagnostic node(s).`);
+      showBanner(`🔒 BATCH LOCK CONFIRMED: Locked ${targetNodeIds.length} node(s)!`);
+    } else {
+      setLockedDiagnosticNodes(prev => {
+        const next = { ...prev };
+        targetNodeIds.forEach(id => { next[id] = false; });
+        return next;
+      });
+      triggerLockAnimation(targetNodeIds, false);
+      addLog('INFO', `Batch Unlock Authorized: Unlocked ${targetNodeIds.length} diagnostic node(s).`);
+      showBanner(`🔓 BATCH UNLOCK CONFIRMED: Unlocked ${targetNodeIds.length} node(s)!`);
+    }
+
+    setBatchConfirmState(null);
+  }, [batchConfirmState, triggerLockAnimation, addLog, showBanner]);
+
   const avgWeeklyHullIntegrity = useMemo(() => {
     if (!telemetry || telemetry.length === 0) return 96.50;
     const mappedValues = telemetry.map(p => {
@@ -1160,14 +1248,7 @@ ${nodeDetails}
         const lockedInTarget = targetNodeIds.filter(id => !!lockedDiagnosticNodes[id]);
 
         if (lockedInTarget.length > 0) {
-          setLockedDiagnosticNodes(prev => {
-            const next = { ...prev };
-            targetNodeIds.forEach(id => { next[id] = false; });
-            return next;
-          });
-          triggerLockAnimation(targetNodeIds, false);
-          addLog('REPAIR', `Shift+U Rapid Recovery: Cleared ${lockedInTarget.length} locked node(s) in selection array.`);
-          showBanner(`🔓 SHIFT+U RECOVERY: Cleared ${lockedInTarget.length} locked node(s) in selection!`);
+          executeBatchUnlock(lockedInTarget);
         } else {
           showBanner(`ℹ️ SHIFT+U RECOVERY: No locked nodes found in current selection.`);
         }
@@ -1179,18 +1260,8 @@ ${nodeDetails}
         const highStressNodes = computedStressZones.filter(z => z.stress > 0.85);
         if (highStressNodes.length > 0) {
           const highStressIds = highStressNodes.map(n => n.id);
-          
           setSelectedDiagnosticNodeIds(highStressIds);
-
-          setLockedDiagnosticNodes(prev => {
-            const next = { ...prev };
-            highStressIds.forEach(id => { next[id] = true; });
-            return next;
-          });
-
-          triggerLockAnimation(highStressIds, true);
-          addLog('ALERT', `Shift+L Emergency Lock: Selected and locked ${highStressIds.length} node(s) exceeding 85% stress threshold.`);
-          showBanner(`🔒 SHIFT+L EMERGENCY LOCK: Selected & locked ${highStressIds.length} critical node(s) (>85% stress)!`);
+          executeBatchLock(highStressIds);
         } else {
           showBanner(`ℹ️ SHIFT+L LOCK: No diagnostic nodes currently exceed 85% stress threshold.`);
         }
@@ -1201,7 +1272,7 @@ ${nodeDetails}
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hullIntegrity, isRepairing, handleRepair, selectedDiagnosticNodeIds, setSelectedDiagnosticNodeIds, computedStressZones, lockedDiagnosticNodes, triggerLockAnimation, addLog, showBanner]);
+  }, [hullIntegrity, isRepairing, handleRepair, selectedDiagnosticNodeIds, setSelectedDiagnosticNodeIds, computedStressZones, lockedDiagnosticNodes, executeBatchLock, executeBatchUnlock, showBanner]);
 
   // 3c. Real-time Hull Integrity fluctuation anchored to system vitality
   useEffect(() => {
@@ -3005,36 +3076,18 @@ ${nodeDetails}
 
           <div className="grid grid-cols-2 gap-1.5">
             <button
-              onClick={() => {
-                setLockedDiagnosticNodes(prev => {
-                  const next = { ...prev };
-                  selectedDiagnosticNodeIds.forEach(id => { next[id] = true; });
-                  return next;
-                });
-                triggerLockAnimation(selectedDiagnosticNodeIds, true);
-                addLog('INFO', `Batch Lock: Locked ${selectedDiagnosticNodeIds.length} diagnostic nodes.`);
-                showBanner(`🔒 BATCH LOCK: Successfully locked ${selectedDiagnosticNodeIds.length} selected nodes!`);
-              }}
+              onClick={() => executeBatchLock(selectedDiagnosticNodeIds)}
               className="py-1.5 px-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-200 border border-blue-500/40 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
-              title="Lock selected nodes (Global Shortcut Shift+L selects & locks all nodes >85% stress)"
+              title="Lock selected nodes (Prompts confirmation if >5 nodes; Shortcut Shift+L)"
             >
               <Lock className="w-2.5 h-2.5 text-blue-400" />
               <span>Lock (Shift+L)</span>
             </button>
 
             <button
-              onClick={() => {
-                setLockedDiagnosticNodes(prev => {
-                  const next = { ...prev };
-                  selectedDiagnosticNodeIds.forEach(id => { next[id] = false; });
-                  return next;
-                });
-                triggerLockAnimation(selectedDiagnosticNodeIds, false);
-                addLog('INFO', `Batch Unlock: Unlocked ${selectedDiagnosticNodeIds.length} diagnostic nodes.`);
-                showBanner(`🔓 BATCH UNLOCK: Successfully unlocked ${selectedDiagnosticNodeIds.length} selected nodes!`);
-              }}
+              onClick={() => executeBatchUnlock(selectedDiagnosticNodeIds)}
               className="py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
-              title="Unlock all locked nodes in selection (Shortcut: Shift+U)"
+              title="Unlock selected nodes (Prompts confirmation if >5 nodes; Shortcut Shift+U)"
             >
               <Unlock className="w-2.5 h-2.5 text-slate-300" />
               <span>Unlock (Shift+U)</span>
@@ -3330,14 +3383,7 @@ ${nodeDetails}
             <button
               onClick={() => {
                 const highStressIds = highStressNodes.map(n => n.id);
-                setLockedDiagnosticNodes(prev => {
-                  const next = { ...prev };
-                  highStressIds.forEach(id => { next[id] = true; });
-                  return next;
-                });
-                triggerLockAnimation(highStressIds, true);
-                addLog('INFO', `Mass Lock: Programmatically locked all ${highStressIds.length} nodes exceeding 80% stress threshold.`);
-                showBanner(`🔒 LOCK ALL NODES: Locked ${highStressIds.length} critical stress nodes!`);
+                executeBatchLock(highStressIds);
               }}
               className="w-full py-1.5 px-2 bg-blue-600/20 hover:bg-blue-600/40 active:bg-blue-600/60 text-blue-200 hover:text-white border border-blue-500/40 hover:border-blue-500/60 rounded-sm font-bold uppercase tracking-wider transition-all cursor-pointer shadow-sm flex items-center justify-center gap-1"
             >
@@ -3496,6 +3542,15 @@ ${nodeDetails}
           {/* Unified Controls & Tab Selector */}
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsWorkspaceOpen(true)}
+                className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
+                title="Open Google Workspace Deck (Drive, Sheets, Gmail, Docs)"
+              >
+                <Share2 className="w-3.5 h-3.5 text-amber-400" />
+                <span>Workspace Deck</span>
+              </button>
+
               <button
                 onClick={handleShareBridgeStatus}
                 className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
@@ -5076,6 +5131,36 @@ ${nodeDetails}
         cancelText="Abort Purge"
         variant="danger"
         requireTextConfirm="CLEAR"
+      />
+
+      {/* Batch Lock/Unlock Confirmation (>5 nodes) */}
+      <ConfirmationDialog
+        isOpen={!!batchConfirmState?.isOpen}
+        onClose={() => setBatchConfirmState(null)}
+        onConfirm={handleConfirmBatchAction}
+        title={batchConfirmState?.actionType === 'lock' ? `Batch Lock Authorization (${batchConfirmState?.targetNodeIds.length} Nodes)` : `Batch Unlock Authorization (${batchConfirmState?.targetNodeIds.length} Nodes)`}
+        description={
+          batchConfirmState?.actionType === 'lock'
+            ? `You are about to lock ${batchConfirmState?.targetNodeIds.length} diagnostic nodes simultaneously across the Navigation Ring array. Locking more than 5 nodes alters bridge-wide structural constraint parameters.`
+            : `You are about to unlock ${batchConfirmState?.targetNodeIds.length} diagnostic nodes simultaneously across the Navigation Ring array. Unlocking more than 5 nodes releases structural constraint parameters on a major portion of the vessel.`
+        }
+        confirmText={batchConfirmState?.actionType === 'lock' ? `Authorize Lock (${batchConfirmState?.targetNodeIds.length})` : `Authorize Unlock (${batchConfirmState?.targetNodeIds.length})`}
+        cancelText="Abort Action"
+        variant={batchConfirmState?.actionType === 'lock' ? 'warning' : 'info'}
+      />
+
+      {/* Google Workspace Deck Drawer Modal */}
+      <WorkspaceHub
+        isOpen={isWorkspaceOpen}
+        onClose={() => setIsWorkspaceOpen(false)}
+        accessToken={googleAccessToken}
+        onSignInRequest={handleGoogleSignIn}
+        hullIntegrity={hullIntegrity}
+        resonance={ledger.resonance}
+        computedStressZones={computedStressZones}
+        briefingNarrative={activeBriefing.briefing_narrative}
+        addLog={addLog}
+        showBanner={showBanner}
       />
     </div>
   );
