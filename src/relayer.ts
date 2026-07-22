@@ -6,15 +6,35 @@ const AGLL_ORACLE_ABI = [
   "event OraclePulse(uint256 indexed cycle, uint256 T, uint256 I, uint256 F, uint256 resonance, bytes32 indexed proofHash, uint256 timestamp)"
 ];
 
+export interface RelayerConfig {
+  rpcUrl: string;
+  privateKey: string;
+  oracleAddress: string;
+}
+
 export class OracleRelayer {
   private provider: ethers.JsonRpcProvider;
   private wallet: ethers.Wallet;
   private oracleContract: ethers.Contract;
 
-  constructor(rpcUrl: string, privateKey: string, oracleAddress: string) {
-    this.provider = new ethers.JsonRpcProvider(rpcUrl);
-    this.wallet = new ethers.Wallet(privateKey, this.provider);
-    this.oracleContract = new ethers.Contract(oracleAddress, AGLL_ORACLE_ABI, this.wallet);
+  constructor(config: RelayerConfig) {
+    this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    this.wallet = new ethers.Wallet(config.privateKey, this.provider);
+    this.oracleContract = new ethers.Contract(config.oracleAddress, AGLL_ORACLE_ABI, this.wallet);
+  }
+
+  static fromEnv(): OracleRelayer {
+    const rpcUrl = process.env.RPC_URL;
+    const privateKey = process.env.RELAYER_PRIVATE_KEY;
+    const oracleAddress = process.env.AGLL_ORACLE_ADDRESS;
+
+    if (!rpcUrl || !privateKey || !oracleAddress) {
+      throw new Error(
+        "[Relayer Error] Missing required environment variables: RPC_URL, RELAYER_PRIVATE_KEY, or AGLL_ORACLE_ADDRESS."
+      );
+    }
+
+    return new OracleRelayer({ rpcUrl, privateKey, oracleAddress });
   }
 
   async submitPulse(T: number, I: number, F: number, rawPayload: string) {
