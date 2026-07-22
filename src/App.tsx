@@ -901,16 +901,8 @@ export default function App() {
 
       ws.onmessage = (event) => {
         try {
-          const message = JSON.parse(event.data);
-          if (message.type === 'oracle_pulse') {
-            const pulse = message.data;
-            console.log('⚡ On-Chain Oracle Pulse:', pulse);
-            if (pulse.resonance) {
-              setResonance(parseFloat(pulse.resonance) * 100);
-            }
-          } else {
-            setStepData(message as StepData);
-          }
+          const data = JSON.parse(event.data) as StepData;
+          setStepData(data);
         } catch (e) {
           console.warn('Failed to parse WebSocket message:', e);
         }
@@ -1075,13 +1067,36 @@ export default function App() {
           handleRepair();
         }
       }
+
+      // Trigger when Shift+U is pressed (clears all locked nodes in the current selection)
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'U' || e.key === 'u')) {
+        e.preventDefault();
+        const targetNodeIds = selectedDiagnosticNodeIds.length > 0
+          ? selectedDiagnosticNodeIds
+          : computedStressZones.map(z => z.id);
+
+        const lockedInTarget = targetNodeIds.filter(id => !!lockedDiagnosticNodes[id]);
+
+        if (lockedInTarget.length > 0) {
+          setLockedDiagnosticNodes(prev => {
+            const next = { ...prev };
+            targetNodeIds.forEach(id => { next[id] = false; });
+            return next;
+          });
+          triggerLockAnimation(targetNodeIds, false);
+          addLog('REPAIR', `Shift+U Rapid Recovery: Cleared ${lockedInTarget.length} locked node(s) in selection array.`);
+          showBanner(`🔓 SHIFT+U RECOVERY: Cleared ${lockedInTarget.length} locked node(s) in selection!`);
+        } else {
+          showBanner(`ℹ️ SHIFT+U RECOVERY: No locked nodes found in current selection.`);
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hullIntegrity, isRepairing, handleRepair]);
+  }, [hullIntegrity, isRepairing, handleRepair, selectedDiagnosticNodeIds, computedStressZones, lockedDiagnosticNodes, triggerLockAnimation, addLog, showBanner]);
 
   // 3c. Real-time Hull Integrity fluctuation anchored to system vitality
   useEffect(() => {
@@ -2862,9 +2877,10 @@ export default function App() {
                 showBanner(`🔓 BATCH UNLOCK: Successfully unlocked ${selectedDiagnosticNodeIds.length} selected nodes!`);
               }}
               className="py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
+              title="Unlock all locked nodes in selection (Shortcut: Shift+U)"
             >
               <Unlock className="w-2.5 h-2.5 text-slate-300" />
-              <span>Unlock</span>
+              <span>Unlock (Shift+U)</span>
             </button>
           </div>
 

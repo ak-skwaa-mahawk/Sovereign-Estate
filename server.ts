@@ -3,16 +3,12 @@ import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { OracleRelayer } from './src/relayer';
 
 // In-memory sovereign state
 let resonance = 85.43;
 let baseEarnings = 1.234567;
 let claimCount = 0;
 const startTime = Date.now();
-
-// Relayer instance reference
-let relayer: OracleRelayer | null = null;
 
 // Function to calculate live earnings (increases slightly over time)
 function getLiveEarnings() {
@@ -25,10 +21,9 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// --- API Routes ---
-
+// API routes first
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', system: 'Sovereign Manifold', relayerActive: !!relayer });
+  res.json({ status: 'ok', system: 'Sovereign Manifold' });
 });
 
 // 1. Sovereign Ledger Endpoint
@@ -39,8 +34,8 @@ app.get('/api/sovereign-ledger', (req, res) => {
     compound_years: 4.2 + (claimCount * 0.4),
     hidden_balance: Math.round(resonance * 15678),
     forfeited_short_game: Math.round(resonance * 11456),
-    status: resonance > 90
-      ? 'Resonance peaking at maximum intensity. The long game is won.'
+    status: resonance > 90 
+      ? 'Resonance peaking at maximum intensity. The long game is won.' 
       : 'Consensus loop completed. Ledger signature verification checked and approved.'
   });
 });
@@ -57,45 +52,7 @@ app.post('/api/claim-resonance', (req, res) => {
   });
 });
 
-// 3. Oracle Pulse Relayer Endpoint
-app.post('/api/oracle/pulse', async (req, res) => {
-  if (!relayer) {
-    return res.status(503).json({
-      success: false,
-      error: 'OracleRelayer is not initialized. Ensure RPC_URL, RELAYER_PRIVATE_KEY, and AGLL_ORACLE_ADDRESS are set in .env.local.'
-    });
-  }
-
-  const { T, I, F, rawPayload } = req.body;
-
-  if (T === undefined || I === undefined || F === undefined) {
-    return res.status(400).json({ success: false, error: 'Missing required parameters: T, I, F' });
-  }
-
-  try {
-    const payload = rawPayload || JSON.stringify({ T, I, F, timestamp: Date.now() });
-    const receipt = await relayer.submitPulse(Number(T), Number(I), Number(F), payload);
-
-    if (receipt) {
-      // Update local resonance calculation to mirror on-chain score
-      const score = Number(T) - (Number(I) / 2) - Number(F);
-      resonance = Math.min(100, Math.max(0, (score * 100) / 100));
-
-      return res.json({
-        success: true,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-        newResonance: resonance
-      });
-    } else {
-      return res.status(400).json({ success: false, error: 'Invariant validation failed (T + I + F > 300)' });
-    }
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || 'Transaction submission failed' });
-  }
-});
-
-// 4. Fireseed Drive Status Endpoint
+// 3. Fireseed Drive Status Endpoint
 app.get('/api/fireseed-status', (req, res) => {
   res.json({
     total_earnings: getLiveEarnings(),
@@ -105,11 +62,11 @@ app.get('/api/fireseed-status', (req, res) => {
   });
 });
 
-// 5. Translate / GibberLink Endpoint
+// 4. Translate / GibberLink Endpoint
 app.get('/api/translate/:text', (req, res) => {
   const inputText = req.params.text || '';
   const normalized = inputText.toLowerCase().trim();
-
+  
   let translated = '';
   if (normalized.includes('hello') || normalized.includes('greetings')) {
     translated = 'Greetings, Commander. The FPT-Ω Bridge is stabilized.';
@@ -124,10 +81,11 @@ app.get('/api/translate/:text', (req, res) => {
   } else if (normalized.includes('long game')) {
     translated = 'Patience compounds. GTC assets mapped directly to local physical sovereignty.';
   } else {
+    // Generate a cool cybernetic translation
     const hex = inputText.split('').map(c => c.charCodeAt(0).toString(16).toUpperCase()).join('-');
     translated = `[GibberLink-Encoded]: Ω-${hex || 'NULL'}-FPT`;
   }
-
+  
   res.json({
     original: inputText,
     translated: translated,
@@ -135,17 +93,18 @@ app.get('/api/translate/:text', (req, res) => {
   });
 });
 
-// 6. Trinity Viz Harmonic SVG Generator
+// 5. Trinity Viz Harmonic SVG Generator
 app.get('/api/trinity-viz', (req, res) => {
   const preset = (req.query.preset as string) || 'Balanced';
   const customDampStr = req.query.custom_damp as string;
   const customDamp = customDampStr ? parseFloat(customDampStr) : null;
-
+  
+  // Choose wave parameters based on preset
   let stability = 0.88;
   let phases = [0, 1.2, 2.4];
   let amplitudes = [45, 30, 20];
   let frequencies = [1.5, 3.0, 4.5];
-
+  
   if (preset === 'Stable') {
     stability = 0.96;
     amplitudes = [30, 15, 10];
@@ -156,29 +115,31 @@ app.get('/api/trinity-viz', (req, res) => {
     stability = 0.61;
     amplitudes = [75, 60, 50];
   }
-
+  
   if (customDamp !== null) {
     stability = Math.min(1.0, Math.max(0.1, stability * customDamp));
   }
-
+  
+  // Math parameters to draw three beautiful sine waves in SVG
   const width = 800;
   const height = 400;
   const midY = height / 2;
-
+  
   const generatePath = (amp: number, freq: number, phase: number) => {
     let d = `M 0 ${midY}`;
     for (let x = 0; x <= width; x += 5) {
       const angle = (x / width) * Math.PI * 2 * freq + phase;
-      const y = midY + Math.sin(angle) * amp * (1 - (x / width) * 0.4);
+      const y = midY + Math.sin(angle) * amp * (1 - (x / width) * 0.4); // slightly dampened along x-axis
       d += ` L ${x} ${y}`;
     }
     return d;
   };
-
+  
   const path1 = generatePath(amplitudes[0], frequencies[0], phases[0]);
   const path2 = generatePath(amplitudes[1], frequencies[1], phases[1]);
   const path3 = generatePath(amplitudes[2], frequencies[2], phases[2]);
-
+  
+  // Glowing SVG markup
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" height="100%">
       <rect width="100%" height="100%" fill="#0a0a0f" />
@@ -188,19 +149,28 @@ app.get('/api/trinity-viz', (req, res) => {
           <feComposite in="SourceGraphic" in2="blur" operator="over" />
         </filter>
       </defs>
+      <!-- Grid Lines -->
       <line x1="0" y1="${midY}" x2="${width}" y2="${midY}" stroke="#1a1a2e" stroke-dasharray="5,5" />
       <line x1="${width / 2}" y1="0" x2="${width / 2}" y2="${height}" stroke="#1a1a2e" stroke-dasharray="5,5" />
+      
+      <!-- Wave 1 (Stability - Neon Cyan) -->
       <path d="${path1}" fill="none" stroke="#00ffff" stroke-width="3" filter="url(#glow)" opacity="0.85" />
+      
+      <!-- Wave 2 (Response - Bright Purple) -->
       <path d="${path2}" fill="none" stroke="#bd00ff" stroke-width="2.5" filter="url(#glow)" opacity="0.75" />
+      
+      <!-- Wave 3 (Harmonic - Golden Amber) -->
       <path d="${path3}" fill="none" stroke="#ffd700" stroke-width="1.5" filter="url(#glow)" opacity="0.65" />
+      
+      <!-- Legend -->
       <text x="20" y="30" fill="#00ffff" font-family="monospace" font-size="12">NEO-CYAN: Stability Wave</text>
       <text x="20" y="50" fill="#bd00ff" font-family="monospace" font-size="12">AMETHYST: Response Delta</text>
       <text x="20" y="70" fill="#ffd700" font-family="monospace" font-size="12">GOLDEN: Harmonic Overlap</text>
     </svg>
   `;
-
+  
   const base64Svg = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-
+  
   res.json({
     status: 'IGNITED',
     preset: preset,
@@ -216,17 +186,10 @@ app.get('/api/trinity-viz', (req, res) => {
 
 async function startServer() {
   const httpServer = createHttpServer(app);
-
-  // Initialize Oracle Relayer if env configuration is present
-  try {
-    relayer = OracleRelayer.fromEnv();
-    console.log('[Oracle Relayer] Initialized successfully.');
-  } catch (err: any) {
-    console.warn('[Oracle Relayer Warning]', err.message);
-  }
-
+  
+  // Set up WebSocket server for real-time glyph streaming on '/glyph-stream'
   const wss = new WebSocketServer({ noServer: true });
-
+  
   httpServer.on('upgrade', (request, socket, head) => {
     const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
     if (pathname === '/glyph-stream') {
@@ -238,6 +201,7 @@ async function startServer() {
     }
   });
 
+  // Seed data structure for navigation ring fragments
   const generateFragments = () => {
     return Array.from({ length: 6 }, (_, i) => {
       const angle = (i * Math.PI * 2) / 6;
@@ -251,32 +215,20 @@ async function startServer() {
     });
   };
 
-  // Wire relayer event broadcast to WebSocket clients
-  if (relayer) {
-    relayer.listenToPulses((pulseData) => {
-      console.log(`[Oracle Event] Pulse confirmed on-chain: Cycle #${pulseData.cycle}`);
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ type: 'oracle_pulse', data: pulseData }));
-        }
-      });
-    });
-  }
-
   wss.on('connection', (ws: WebSocket) => {
     console.log('WebSocket connection established to /glyph-stream');
     let step = 0;
-
+    
     const interval = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) {
         clearInterval(interval);
         return;
       }
-
+      
       const fragments = generateFragments();
       const reciprocity = 0.84 + Math.sin(step / 10) * 0.08 + (claimCount * 0.01);
       const stability = 0.89 + Math.cos(step / 15) * 0.06;
-
+      
       const ledgers: Record<string, any> = {
         "Block Anchor": `0x99733-Q-${Math.floor(100000 + Math.random() * 900000)}`,
         "Entropy Threshold": (0.12 + Math.random() * 0.03).toFixed(4),
@@ -292,13 +244,14 @@ async function startServer() {
         mesh_reciprocity: parseFloat(reciprocity.toFixed(4)),
         trinity_stability: parseFloat(stability.toFixed(4))
       }));
-    }, 800);
+    }, 800); // stream updates every 800ms
 
     ws.on('close', () => {
       clearInterval(interval);
     });
   });
 
+  // Vite Integration
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
