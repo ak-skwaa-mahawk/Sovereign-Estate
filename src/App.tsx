@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback, CSSProperties
 import { jsPDF } from 'jspdf';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { WorkspaceHub } from './components/WorkspaceHub';
+import { ShortcutsHelpModal } from './components/ShortcutsHelpModal';
 import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
 import { 
   signInWithPopup, 
@@ -58,6 +59,7 @@ import {
   Layers,
   ChevronDown,
   Search,
+  Keyboard,
   X,
   Settings,
   Clock,
@@ -209,6 +211,7 @@ export default function App() {
   const [isClearLogsConfirmOpen, setIsClearLogsConfirmOpen] = useState<boolean>(false);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [isWorkspaceOpen, setIsWorkspaceOpen] = useState<boolean>(false);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
   const [batchConfirmState, setBatchConfirmState] = useState<{
     isOpen: boolean;
     actionType: 'lock' | 'unlock';
@@ -1304,6 +1307,12 @@ ${nodeDetails}
         } else {
           showBanner(`ℹ️ SHIFT+L LOCK: No diagnostic nodes currently exceed 85% stress threshold.`);
         }
+      }
+
+      // Trigger when ? is pressed
+      if (e.key === '?') {
+        e.preventDefault();
+        setIsShortcutsOpen(prev => !prev);
       }
     };
 
@@ -3544,6 +3553,15 @@ ${nodeDetails}
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex items-center gap-2">
               <button
+                onClick={() => setIsShortcutsOpen(true)}
+                className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
+                title="Keyboard Shortcuts & Hotkeys Guide (?)"
+              >
+                <Keyboard className="w-3.5 h-3.5 text-amber-400" />
+                <span>Shortcuts</span>
+              </button>
+
+              <button
                 onClick={() => setIsWorkspaceOpen(true)}
                 className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
                 title="Open Google Workspace Deck (Drive, Sheets, Gmail, Docs)"
@@ -5162,6 +5180,12 @@ ${nodeDetails}
         briefingNarrative={activeBriefing.briefing_narrative}
         addLog={addLog}
         showBanner={showBanner}
+      />
+
+      {/* Keyboard Shortcuts Help Modal */}
+      <ShortcutsHelpModal
+        isOpen={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
       />
     </div>
   );
