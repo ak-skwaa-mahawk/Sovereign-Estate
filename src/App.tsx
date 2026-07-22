@@ -901,8 +901,16 @@ export default function App() {
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data) as StepData;
-          setStepData(data);
+          const message = JSON.parse(event.data);
+          if (message.type === 'oracle_pulse') {
+            const pulse = message.data;
+            console.log('⚡ On-Chain Oracle Pulse:', pulse);
+            if (pulse.resonance) {
+              setResonance(parseFloat(pulse.resonance) * 100);
+            }
+          } else {
+            setStepData(message as StepData);
+          }
         } catch (e) {
           console.warn('Failed to parse WebSocket message:', e);
         }
