@@ -83,8 +83,10 @@ export const WorkspaceHub: React.FC<WorkspaceHubProps> = ({
     payload?: any;
   } | null>(null);
 
-  // Auto-fill default email body
+  // Auto-fill default email body only when modal opens or if empty
   useEffect(() => {
+    if (!isOpen) return;
+    if (emailBody) return; // Don't overwrite if user typed or already set
     const highStress = computedStressZones.filter(z => z.stress > 0.8).length;
     const bodyText = `SOVEREIGN MANIFOL - BRIDGE OPERATIONAL BRIEFING
 ------------------------------------------------
@@ -98,7 +100,7 @@ ${briefingNarrative}
 
 This is an automated bridge telemetry report sent via integrated Workspace Gmail Service.`;
     setEmailBody(bodyText);
-  }, [hullIntegrity, resonance, computedStressZones, briefingNarrative]);
+  }, [isOpen, emailBody, hullIntegrity, resonance, computedStressZones, briefingNarrative]);
 
   // Fetch Drive Files
   const fetchDriveFiles = useCallback(async () => {
@@ -175,7 +177,7 @@ This is an automated bridge telemetry report sent via integrated Workspace Gmail
     }
   }, [accessToken]);
 
-  // Trigger tab data fetch
+  // Trigger tab data fetch on tab switch or open
   useEffect(() => {
     if (!isOpen || !accessToken) return;
     if (activeSubTab === 'drive') {
@@ -183,7 +185,7 @@ This is an automated bridge telemetry report sent via integrated Workspace Gmail
     } else if (activeSubTab === 'gmail') {
       fetchGmailMessages();
     }
-  }, [isOpen, accessToken, activeSubTab, fetchDriveFiles, fetchGmailMessages]);
+  }, [isOpen, accessToken, activeSubTab]);
 
   // Execution functions after user confirmation
   const handleConfirmAction = async () => {

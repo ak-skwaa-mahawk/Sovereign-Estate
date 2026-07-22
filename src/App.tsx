@@ -1204,6 +1204,45 @@ ${nodeDetails}
     return () => clearInterval(timer);
   }, []);
 
+  // Nanite Structural Restoration
+  const handleRepair = useCallback(() => {
+    if (isRepairing) return;
+    setIsRepairing(true);
+    setRepairProgress(0);
+    setRepairOverride(false);
+    setRepairCyclesCount(prev => prev + 1);
+    setCumulativeNanitesDischarged(prev => prev + 2500);
+    
+    const startIntegrity = hullIntegrity;
+    const targetIntegrity = 100.00;
+    showBanner("🛠️ Commencing hull micro-welding and structural nanite injection...");
+    addLog('REPAIR', `Structural restoration sequence initiated at ${startIntegrity.toFixed(2)}% integrity.`);
+
+    const duration = 5000; // 5 seconds
+    const intervalTime = 50; // Update every 50ms
+    const totalSteps = duration / intervalTime;
+    let currentStep = 0;
+
+    const timer = setInterval(() => {
+      currentStep++;
+      const progress = (currentStep / totalSteps) * 100;
+      setRepairProgress(progress);
+      
+      // Interpolate hull integrity from startIntegrity to 100
+      const currentIntegrity = startIntegrity + (targetIntegrity - startIntegrity) * (progress / 100);
+      setHullIntegrity(parseFloat(currentIntegrity.toFixed(2)));
+
+      if (currentStep >= totalSteps) {
+        clearInterval(timer);
+        setIsRepairing(false);
+        setRepairOverride(true);
+        setHullIntegrity(100.00);
+        showBanner("❇️ Hull micro-structural integrity restored to 100.00%.");
+        addLog('SUCCESS', 'Hull micro-welding finished. System integrity stabilized at 100.00%.');
+      }
+    }, intervalTime);
+  }, [isRepairing, hullIntegrity, showBanner, addLog]);
+
   // 3b. Global keyboard shortcuts: Ctrl+T (switch views), Shift+R (manual repair)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1758,44 +1797,6 @@ ${nodeDetails}
       console.error("PDF generation error: ", error);
       showBanner("❌ Error: Failed to generate printable PDF report.");
     }
-  };
-
-  function handleRepair() {
-    if (isRepairing) return;
-    setIsRepairing(true);
-    setRepairProgress(0);
-    setRepairOverride(false);
-    setRepairCyclesCount(prev => prev + 1);
-    setCumulativeNanitesDischarged(prev => prev + 2500);
-    
-    const startIntegrity = hullIntegrity;
-    const targetIntegrity = 100.00;
-    showBanner("🛠️ Commencing hull micro-welding and structural nanite injection...");
-    addLog('REPAIR', `Structural restoration sequence initiated at ${startIntegrity.toFixed(2)}% integrity.`);
-
-    const duration = 5000; // 5 seconds
-    const intervalTime = 50; // Update every 50ms
-    const totalSteps = duration / intervalTime;
-    let currentStep = 0;
-
-    const timer = setInterval(() => {
-      currentStep++;
-      const progress = (currentStep / totalSteps) * 100;
-      setRepairProgress(progress);
-      
-      // Interpolate hull integrity from startIntegrity to 100
-      const currentIntegrity = startIntegrity + (targetIntegrity - startIntegrity) * (progress / 100);
-      setHullIntegrity(parseFloat(currentIntegrity.toFixed(2)));
-
-      if (currentStep >= totalSteps) {
-        clearInterval(timer);
-        setIsRepairing(false);
-        setRepairOverride(true);
-        setHullIntegrity(100.00);
-        showBanner("❇️ Hull micro-structural integrity restored to 100.00%.");
-        addLog('SUCCESS', 'Hull micro-welding finished. System integrity stabilized at 100.00%.');
-      }
-    }, intervalTime);
   };
 
   const handleFullOverhaul = () => {
