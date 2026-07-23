@@ -1,9 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback, CSSProperties, MouseEvent } from 'react';
 import { jsPDF } from 'jspdf';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
-import { WorkspaceHub } from './components/WorkspaceHub';
-import { ShortcutsHelpModal } from './components/ShortcutsHelpModal';
-import { AiCopilotModal } from './components/AiCopilotModal';
+import { OracleResonanceHUD } from './components/OracleResonanceHUD';
 import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
 import { 
   signInWithPopup, 
@@ -60,34 +58,13 @@ import {
   Layers,
   ChevronDown,
   Search,
-  Keyboard,
   X,
   Settings,
   Clock,
   Lock,
   Unlock,
-  Unlink,
-  Share2,
-  Copy,
-  Check,
-  ListOrdered,
-  Play,
-  Pause,
-  ArrowUp,
-  ArrowDown,
-  Plus,
-  Trash2,
-  ListPlus
+  Unlink
 } from 'lucide-react';
-
-export interface RepairTaskQueueItem {
-  id: string;
-  nodeId: string;
-  name: string;
-  addedAt: string;
-  initialStress: number;
-  status: 'QUEUED' | 'REPAIRING' | 'COMPLETED' | 'CANCELLED';
-}
 
 interface TelemetryPoint {
   block: number;
@@ -227,15 +204,6 @@ export default function App() {
   const [showNotification, setShowNotification] = useState<string | null>(null);
   const [isOverhaulConfirmOpen, setIsOverhaulConfirmOpen] = useState<boolean>(false);
   const [isClearLogsConfirmOpen, setIsClearLogsConfirmOpen] = useState<boolean>(false);
-  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
-  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState<boolean>(false);
-  const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
-  const [isAiCopilotOpen, setIsAiCopilotOpen] = useState<boolean>(false);
-  const [batchConfirmState, setBatchConfirmState] = useState<{
-    isOpen: boolean;
-    actionType: 'lock' | 'unlock';
-    targetNodeIds: string[];
-  } | null>(null);
   const [logsClearedAt, setLogsClearedAt] = useState<number>(() => {
     const saved = localStorage.getItem('logs_cleared_at');
     return saved ? parseInt(saved, 10) : 0;
@@ -442,18 +410,8 @@ export default function App() {
 
   const handleGoogleSignIn = async () => {
     const provider = new GoogleAuthProvider();
-    provider.addScope('https://www.googleapis.com/auth/drive');
-    provider.addScope('https://www.googleapis.com/auth/spreadsheets');
-    provider.addScope('https://mail.google.com/');
-    provider.addScope('https://www.googleapis.com/auth/documents');
     try {
-      const result = await signInWithPopup(auth, provider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        setGoogleAccessToken(credential.accessToken);
-        addLog('SUCCESS', 'Google Workspace access authorized! Drive, Sheets, Gmail, & Docs linked.');
-        showBanner('🌌 GOOGLE WORKSPACE CONNECTED: Drive, Sheets, Gmail & Docs active!');
-      }
+      await signInWithPopup(auth, provider);
     } catch (err) {
       console.error('Sign-in failed:', err);
       addLog('ALERT', 'Cloud authentication failed. Standalone backup remains active.');
@@ -514,7 +472,6 @@ export default function App() {
     });
   }, []);
   const [dischargedDiagnosticNodes, setDischargedDiagnosticNodes] = useState<Record<string, number>>({});
-  const [recentlyRepairedNodes, setRecentlyRepairedNodes] = useState<Record<string, { time: number; prevStress: number }>>({});
   const [selectedDiagnosticNodeIds, setSelectedDiagnosticNodeIds] = useState<string[]>([]);
   const [selectionModeEnabled, setSelectionModeEnabled] = useState<boolean>(true);
   const [isDraggingSelection, setIsDraggingSelection] = useState<boolean>(false);
@@ -522,7 +479,6 @@ export default function App() {
   const [dragCurrentCoords, setDragCurrentCoords] = useState<{ x: number; y: number } | null>(null);
   const [quadrantConfirmNodeId, setQuadrantConfirmNodeId] = useState<string | null>(null);
   const [pingedQuadrant, setPingedQuadrant] = useState<{ quadNum: number; maxAvgStress: number; time: number } | null>(null);
-  const [isShareCopied, setIsShareCopied] = useState<boolean>(false);
   const navigationRingSvgRef = useRef<SVGSVGElement | null>(null);
   const [isDiagnosticMenuOpen, setIsDiagnosticMenuOpen] = useState<boolean>(false);
   const [logFilter, setLogFilter] = useState<'ALL' | 'INFO' | 'ALERT' | 'REPAIR' | 'SUCCESS'>('ALL');
@@ -531,25 +487,6 @@ export default function App() {
   const [logEndTime, setLogEndTime] = useState<string>('');
   const [criticalModeEnabled, setCriticalModeEnabled] = useState<boolean>(false);
   const [criticalThreshold, setCriticalThreshold] = useState<number>(93.0);
-
-  // Task Queue & Replenishing Nanite Reservoir State
-  const [repairTaskQueue, setRepairTaskQueue] = useState<RepairTaskQueueItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('repair_task_queue');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [naniteReservoir, setNaniteReservoir] = useState<number>(() => {
-    const saved = localStorage.getItem('nanite_reservoir');
-    return saved ? parseFloat(saved) : 650;
-  });
-  const [naniteMaxCapacity, setNaniteMaxCapacity] = useState<number>(1000);
-  const [naniteReplenishRate, setNaniteReplenishRate] = useState<number>(25);
-  const [naniteCostPerNode, setNaniteCostPerNode] = useState<number>(150);
-  const [isTaskQueueAutomated, setIsTaskQueueAutomated] = useState<boolean>(true);
-  const [isNaniteReplenishing, setIsNaniteReplenishing] = useState<boolean>(true);
 
   const filteredLogs = useMemo(() => {
     let fl = logFilter === 'ALL' ? logs : logs.filter(log => log.level === logFilter);
@@ -628,87 +565,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('last_overhaul_count', lastOverhaulCount.toString());
   }, [lastOverhaulCount]);
-
-  useEffect(() => {
-    localStorage.setItem('repair_task_queue', JSON.stringify(repairTaskQueue));
-  }, [repairTaskQueue]);
-
-  useEffect(() => {
-    localStorage.setItem('nanite_reservoir', naniteReservoir.toString());
-  }, [naniteReservoir]);
-
-  // Automated Nanite Replenishment Ticker (+25 nL/s)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setNaniteReservoir(prev => {
-        if (!isNaniteReplenishing) return prev;
-        return Math.min(naniteMaxCapacity, prev + naniteReplenishRate);
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isNaniteReplenishing, naniteMaxCapacity, naniteReplenishRate]);
-
-  // Sequential Automated Task Queue Repair Execution Engine
-  useEffect(() => {
-    if (!isTaskQueueAutomated) return;
-
-    // Find first item in queue with status QUEUED
-    const nextPendingIndex = repairTaskQueue.findIndex(item => item.status === 'QUEUED');
-    if (nextPendingIndex === -1) return;
-
-    const nextItem = repairTaskQueue[nextPendingIndex];
-
-    // Check if nanite reservoir has reached discharge threshold
-    if (naniteReservoir >= naniteCostPerNode) {
-      // Check if node is locked
-      const isLocked = lockedDiagnosticNodes[nextItem.nodeId];
-      if (isLocked) {
-        addLog('ALERT', `Task Queue automated repair deferred for ${nextItem.name}: Node is locked!`);
-        showBanner(`🔒 QUEUE DEFERRED: ${nextItem.name} is locked. Unlock node to allow automated nanite repair.`);
-        return;
-      }
-
-      // Execute repair
-      setNaniteReservoir(prev => Math.max(0, prev - naniteCostPerNode));
-
-      const now = Date.now();
-      setDischargedDiagnosticNodes(prev => ({
-        ...prev,
-        [nextItem.nodeId]: 0.05
-      }));
-      setRecentlyRepairedNodes(prev => ({
-        ...prev,
-        [nextItem.nodeId]: { time: now, prevStress: nextItem.initialStress }
-      }));
-      setCumulativeNanitesDischarged(prev => prev + naniteCostPerNode);
-      setHullIntegrity(prev => Math.min(100.0, parseFloat((prev + 0.40).toFixed(2))));
-
-      // Update queue item status
-      setRepairTaskQueue(prev => {
-        const next = [...prev];
-        next[nextPendingIndex] = {
-          ...next[nextPendingIndex],
-          status: 'COMPLETED'
-        };
-        return next;
-      });
-
-      const remainingPending = repairTaskQueue.filter((item, idx) => idx > nextPendingIndex && item.status === 'QUEUED').length;
-
-      addLog('REPAIR', `🤖 AUTOMATED REPAIR QUEUE: Discharged ${naniteCostPerNode} nL nanite resources to repair ${nextItem.name}. Node restored to 5% nominal baseline.`);
-      addLog('SUCCESS', `Task Queue Sequence: ${nextItem.name} repair complete. Remaining queue depth: ${remainingPending}.`);
-      showBanner(`🤖 TASK QUEUE AUTO-REPAIR: Repaired ${nextItem.name}! (${remainingPending} pending in queue)`);
-    }
-  }, [
-    naniteReservoir,
-    naniteCostPerNode,
-    isTaskQueueAutomated,
-    repairTaskQueue,
-    lockedDiagnosticNodes,
-    addLog,
-    showBanner
-  ]);
 
   // Firebase Auth State Observer
   useEffect(() => {
@@ -981,299 +837,6 @@ export default function App() {
     showBanner(`📡 SECTOR PING: Quadrant Q${topQuadNum} highlighted — Peak aggregate stress detected (${(topAvgStress * 100).toFixed(1)}% load)!`);
   }, [computedStressZones, addLog, showBanner]);
 
-  // Dynamic Heartbeat System Vitality Configuration
-  const heartbeatDetails = useMemo(() => {
-    // hullIntegrity ranges from 90.0 to 100.0
-    if (hullIntegrity >= 96.0) {
-      return {
-        bpm: Math.round(60 + (hullIntegrity - 96.0) * 2.5), // ~60 to 70 BPM
-        colorClass: 'text-emerald-400',
-        glowColor: '#10b981',
-        pulseSpeed: '1.2s',
-        statusText: 'NOMINAL VITALITY',
-        bgClass: 'bg-emerald-500/10 border-emerald-500/20'
-      };
-    } else if (hullIntegrity >= 93.0) {
-      return {
-        bpm: Math.round(80 + (96.0 - hullIntegrity) * 6), // ~80 to 98 BPM
-        colorClass: 'text-amber-500',
-        glowColor: '#f59e0b',
-        pulseSpeed: '0.8s',
-        statusText: 'STRESSED DEVIATION',
-        bgClass: 'bg-amber-500/10 border-amber-500/20'
-      };
-    } else {
-      return {
-        bpm: Math.round(110 + (93.0 - hullIntegrity) * 16), // ~110 to 158+ BPM
-        colorClass: 'text-red-500',
-        glowColor: '#ef4444',
-        pulseSpeed: '0.45s',
-        statusText: 'CRITICAL INSTABILITY',
-        bgClass: 'bg-red-500/10 border-red-500/20 animate-pulse'
-      };
-    }
-  }, [hullIntegrity]);
-
-  // Share Bridge Status handler: copies formatted summary of hull integrity, resonance, & active diagnostic array status
-  const handleShareBridgeStatus = useCallback(() => {
-    const totalNodes = computedStressZones.length;
-    const lockedCount = computedStressZones.filter(z => z.locked).length;
-    const highStressCount = computedStressZones.filter(z => z.stress > 0.8).length;
-    const avgStress = (computedStressZones.reduce((acc, z) => acc + z.stress, 0) / (totalNodes || 1) * 100).toFixed(1);
-
-    const nodeDetails = computedStressZones
-      .map(z => `  • [${z.name}]: ${(z.stress * 100).toFixed(1)}% stress ${z.locked ? '🔒 [LOCKED]' : ''}`)
-      .join('\n');
-
-    const summaryText = `================================================
-  SOVEREIGN MANIFOL - BRIDGE STATUS REPORT
-================================================
-Timestamp: ${new Date().toLocaleString()}
-Epoch: 842.1 | Vessel Class: Synara FPT-Ω
-
-[VITAL STATS]
-• Hull Integrity: ${hullIntegrity.toFixed(1)}% (${hullIntegrity < 50 ? 'CRITICAL' : hullIntegrity < 75 ? 'WARNING' : 'STABLE'})
-• Quantum Resonance: ${ledger.resonance.toFixed(2)}% (Target Vitality: ${(ledger.resonance / 100).toFixed(4)})
-• Vessel Heartbeat: ${heartbeatDetails.bpm} BPM (${heartbeatDetails.statusText})
-• Network Link: ${wsConnected ? 'ONLINE (WebSocket Linked)' : 'DEMO LINKED (Autonomous Stream)'}
-
-[DIAGNOSTIC ARRAY OVERVIEW]
-• Monitored Nodes: ${totalNodes}
-• Locked Nodes: ${lockedCount} / ${totalNodes}
-• High-Strain Nodes (>80%): ${highStressCount}
-• Aggregate Strain Load: ${avgStress}%
-
-[ACTIVE DIAGNOSTIC NODE BREAKDOWN]
-${nodeDetails}
-================================================`;
-
-    navigator.clipboard.writeText(summaryText).then(() => {
-      setIsShareCopied(true);
-      setTimeout(() => setIsShareCopied(false), 2500);
-      addLog('INFO', 'Share Bridge Status: Summary successfully copied to clipboard.');
-      showBanner('📋 BRIDGE STATUS COPIED: Full status report copied to clipboard!');
-    }).catch(err => {
-      console.error('Clipboard copy failed:', err);
-      addLog('WARN', 'Share Bridge Status: Failed to copy summary to clipboard.');
-      showBanner('⚠️ FAILED TO COPY: Clipboard permission blocked.');
-    });
-  }, [computedStressZones, hullIntegrity, ledger.resonance, heartbeatDetails, wsConnected, addLog, showBanner]);
-
-  // Batch Lock/Unlock helper functions with confirmation prompt when > 5 nodes selected
-  const executeBatchLock = useCallback((nodeIds: string[]) => {
-    if (nodeIds.length === 0) return;
-
-    if (nodeIds.length > 5) {
-      setBatchConfirmState({
-        isOpen: true,
-        actionType: 'lock',
-        targetNodeIds: nodeIds
-      });
-    } else {
-      setLockedDiagnosticNodes(prev => {
-        const next = { ...prev };
-        nodeIds.forEach(id => { next[id] = true; });
-        return next;
-      });
-      triggerLockAnimation(nodeIds, true);
-      addLog('INFO', `Batch Lock: Locked ${nodeIds.length} diagnostic node(s).`);
-      showBanner(`🔒 BATCH LOCK: Successfully locked ${nodeIds.length} node(s)!`);
-    }
-  }, [triggerLockAnimation, addLog, showBanner]);
-
-  const executeBatchUnlock = useCallback((nodeIds: string[]) => {
-    if (nodeIds.length === 0) return;
-
-    if (nodeIds.length > 5) {
-      setBatchConfirmState({
-        isOpen: true,
-        actionType: 'unlock',
-        targetNodeIds: nodeIds
-      });
-    } else {
-      setLockedDiagnosticNodes(prev => {
-        const next = { ...prev };
-        nodeIds.forEach(id => { next[id] = false; });
-        return next;
-      });
-      triggerLockAnimation(nodeIds, false);
-      addLog('INFO', `Batch Unlock: Unlocked ${nodeIds.length} diagnostic node(s).`);
-      showBanner(`🔓 BATCH UNLOCK: Successfully unlocked ${nodeIds.length} node(s)!`);
-    }
-  }, [triggerLockAnimation, addLog, showBanner]);
-
-  const handleConfirmBatchAction = useCallback(() => {
-    if (!batchConfirmState || !batchConfirmState.targetNodeIds.length) return;
-    const { actionType, targetNodeIds } = batchConfirmState;
-
-    if (actionType === 'lock') {
-      setLockedDiagnosticNodes(prev => {
-        const next = { ...prev };
-        targetNodeIds.forEach(id => { next[id] = true; });
-        return next;
-      });
-      triggerLockAnimation(targetNodeIds, true);
-      addLog('INFO', `Batch Lock Authorized: Locked ${targetNodeIds.length} diagnostic node(s).`);
-      showBanner(`🔒 BATCH LOCK CONFIRMED: Locked ${targetNodeIds.length} node(s)!`);
-    } else {
-      setLockedDiagnosticNodes(prev => {
-        const next = { ...prev };
-        targetNodeIds.forEach(id => { next[id] = false; });
-        return next;
-      });
-      triggerLockAnimation(targetNodeIds, false);
-      addLog('INFO', `Batch Unlock Authorized: Unlocked ${targetNodeIds.length} diagnostic node(s).`);
-      showBanner(`🔓 BATCH UNLOCK CONFIRMED: Unlocked ${targetNodeIds.length} node(s)!`);
-    }
-
-    setBatchConfirmState(null);
-  }, [batchConfirmState, triggerLockAnimation, addLog, showBanner]);
-
-  // Bulk Repair Functionality: Repairs all selected diagnostic nodes in a single interaction
-  const executeBulkRepair = useCallback((nodeIds?: string[]) => {
-    const targets = (nodeIds && nodeIds.length > 0) ? nodeIds : selectedDiagnosticNodeIds;
-
-    if (targets.length === 0) {
-      const highStress = computedStressZones.filter(z => z.stress > 0.40);
-      if (highStress.length > 0) {
-        const ids = highStress.map(z => z.id);
-        setSelectedDiagnosticNodeIds(ids);
-        showBanner(`🎯 BULK REPAIR: Auto-selected ${ids.length} diagnostic node(s) with elevated stress. Click Bulk Repair again or press Shift+B to confirm.`);
-        addLog('INFO', `Bulk Repair: Auto-selected ${ids.length} diagnostic node(s) exceeding 40% stress threshold.`);
-      } else {
-        showBanner(`ℹ️ BULK REPAIR: All diagnostic nodes are currently operating at nominal stress levels (<40%).`);
-      }
-      return;
-    }
-
-    const targetZones = computedStressZones.filter(z => targets.includes(z.id));
-    const unlockedNodes = targetZones.filter(z => !z.locked);
-    const lockedNodes = targetZones.filter(z => z.locked);
-
-    if (unlockedNodes.length === 0) {
-      showBanner(`⚠️ BULK REPAIR BLOCKED: All ${targets.length} selected node(s) are locked! Unlock nodes to allow nanite discharge.`);
-      addLog('ALERT', `Bulk Repair blocked: ${targets.length} selected node(s) are locked.`);
-      return;
-    }
-
-    const now = Date.now();
-    const overrides: Record<string, number> = {};
-    const repairAnimMap: Record<string, { time: number; prevStress: number }> = {};
-
-    unlockedNodes.forEach(node => {
-      overrides[node.id] = 0.05; // Restores to pristine 5% nominal stress
-      repairAnimMap[node.id] = { time: now, prevStress: node.stress };
-    });
-
-    setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
-    setRecentlyRepairedNodes(prev => ({ ...prev, ...repairAnimMap }));
-
-    const nanitesUsed = unlockedNodes.length * 200;
-    setCumulativeNanitesDischarged(prev => prev + nanitesUsed);
-
-    const integrityBoost = unlockedNodes.length * 0.40;
-    setHullIntegrity(prev => Math.min(100.0, parseFloat((prev + integrityBoost).toFixed(2))));
-
-    const repairedNames = unlockedNodes.map(n => n.name).join(', ');
-    addLog('REPAIR', `Bulk Node Repair Executed: Simultaneously discharged nanites to ${unlockedNodes.length} node(s) [${repairedNames}]. Restored to 5% nominal baseline.`);
-    addLog('SUCCESS', `Bridge Navigation Ring: ${unlockedNodes.length} node(s) repaired. Injected ${nanitesUsed} nL nanite fluid.`);
-
-    const skippedNotice = lockedNodes.length > 0 ? ` (${lockedNodes.length} locked node(s) skipped)` : '';
-    showBanner(`🛠️ BULK REPAIR COMPLETE: Successfully repaired ${unlockedNodes.length} diagnostic node(s)!${skippedNotice}`);
-  }, [selectedDiagnosticNodeIds, computedStressZones, showBanner, addLog]);
-
-  // Task Queue Helper Action Handlers
-  const handleEnqueueNode = useCallback((nodeId: string) => {
-    const zone = computedStressZones.find(z => z.id === nodeId);
-    if (!zone) return;
-
-    if (repairTaskQueue.some(item => item.nodeId === nodeId && item.status === 'QUEUED')) {
-      showBanner(`ℹ️ Node ${zone.name} is already present in the task queue.`);
-      return;
-    }
-
-    const newItem: RepairTaskQueueItem = {
-      id: Math.random().toString(36).substring(2, 9),
-      nodeId,
-      name: zone.name,
-      addedAt: new Date().toTimeString().split(' ')[0],
-      initialStress: zone.stress,
-      status: 'QUEUED'
-    };
-
-    setRepairTaskQueue(prev => [...prev, newItem]);
-    const pos = repairTaskQueue.filter(item => item.status === 'QUEUED').length + 1;
-    addLog('INFO', `Flagged diagnostic node [${zone.name}] for sequential automated nanite repair (Queue Order #${pos}).`);
-    showBanner(`📋 QUEUED: ${zone.name} flagged for repair at Position #${pos}.`);
-  }, [computedStressZones, repairTaskQueue, addLog, showBanner]);
-
-  const handleEnqueueMultipleNodes = useCallback((nodeIds: string[]) => {
-    if (nodeIds.length === 0) return;
-
-    const newItems: RepairTaskQueueItem[] = [];
-    let addedCount = 0;
-
-    nodeIds.forEach(nodeId => {
-      const zone = computedStressZones.find(z => z.id === nodeId);
-      if (!zone) return;
-      if (repairTaskQueue.some(item => item.nodeId === nodeId && item.status === 'QUEUED')) return;
-
-      newItems.push({
-        id: Math.random().toString(36).substring(2, 9),
-        nodeId,
-        name: zone.name,
-        addedAt: new Date().toTimeString().split(' ')[0],
-        initialStress: zone.stress,
-        status: 'QUEUED'
-      });
-      addedCount++;
-    });
-
-    if (addedCount > 0) {
-      setRepairTaskQueue(prev => [...prev, ...newItems]);
-      addLog('INFO', `Batch Flagged ${addedCount} non-adjacent diagnostic node(s) for sequential automated repair.`);
-      showBanner(`📋 TASK QUEUE: Flagged ${addedCount} node(s) for sequential repair!`);
-    } else {
-      showBanner(`ℹ️ Selected nodes are already present in the task queue.`);
-    }
-  }, [computedStressZones, repairTaskQueue, addLog, showBanner]);
-
-  const handleDequeueNode = useCallback((queueItemId: string) => {
-    setRepairTaskQueue(prev => prev.filter(item => item.id !== queueItemId));
-    showBanner(`🗑️ Node unflagged from repair task queue.`);
-  }, [showBanner]);
-
-  const handleClearTaskQueue = useCallback(() => {
-    setRepairTaskQueue([]);
-    addLog('INFO', 'Cleared diagnostic repair task queue.');
-    showBanner(`🧹 TASK QUEUE CLEARED.`);
-  }, [addLog, showBanner]);
-
-  const handleReorderTaskQueue = useCallback((fromIndex: number, toIndex: number) => {
-    setRepairTaskQueue(prev => {
-      if (fromIndex < 0 || fromIndex >= prev.length || toIndex < 0 || toIndex >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
-      return next;
-    });
-  }, []);
-
-  const handleAutoQueueStressedNodes = useCallback(() => {
-    const stressed = computedStressZones.filter(z => z.stress >= 0.40);
-    if (stressed.length === 0) {
-      showBanner(`ℹ️ All diagnostic nodes are currently operating below 40% stress threshold.`);
-      return;
-    }
-    handleEnqueueMultipleNodes(stressed.map(z => z.id));
-  }, [computedStressZones, handleEnqueueMultipleNodes, showBanner]);
-
-  const handleInstantNaniteInject = useCallback(() => {
-    setNaniteReservoir(prev => Math.min(naniteMaxCapacity, prev + 250));
-    addLog('REPAIR', `⚡ Instant Nanite Inject: Pumped +250 nL synthesized nanites into repair reservoir.`);
-    showBanner(`⚡ NANITE RESERVOIR BOOST: +250 nL nanite fluid injected!`);
-  }, [naniteMaxCapacity, addLog, showBanner]);
-
   const avgWeeklyHullIntegrity = useMemo(() => {
     if (!telemetry || telemetry.length === 0) return 96.50;
     const mappedValues = telemetry.map(p => {
@@ -1339,8 +902,16 @@ ${nodeDetails}
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data) as StepData;
-          setStepData(data);
+          const message = JSON.parse(event.data);
+          if (message.type === 'oracle_pulse') {
+            const pulse = message.data;
+            console.log('⚡ On-Chain Oracle Pulse:', pulse);
+            if (pulse.resonance) {
+              setResonance(parseFloat(pulse.resonance) * 100);
+            }
+          } else {
+            setStepData(message as StepData);
+          }
         } catch (e) {
           console.warn('Failed to parse WebSocket message:', e);
         }
@@ -1472,45 +1043,6 @@ ${nodeDetails}
     return () => clearInterval(timer);
   }, []);
 
-  // Nanite Structural Restoration
-  const handleRepair = useCallback(() => {
-    if (isRepairing) return;
-    setIsRepairing(true);
-    setRepairProgress(0);
-    setRepairOverride(false);
-    setRepairCyclesCount(prev => prev + 1);
-    setCumulativeNanitesDischarged(prev => prev + 2500);
-    
-    const startIntegrity = hullIntegrity;
-    const targetIntegrity = 100.00;
-    showBanner("🛠️ Commencing hull micro-welding and structural nanite injection...");
-    addLog('REPAIR', `Structural restoration sequence initiated at ${startIntegrity.toFixed(2)}% integrity.`);
-
-    const duration = 5000; // 5 seconds
-    const intervalTime = 50; // Update every 50ms
-    const totalSteps = duration / intervalTime;
-    let currentStep = 0;
-
-    const timer = setInterval(() => {
-      currentStep++;
-      const progress = (currentStep / totalSteps) * 100;
-      setRepairProgress(progress);
-      
-      // Interpolate hull integrity from startIntegrity to 100
-      const currentIntegrity = startIntegrity + (targetIntegrity - startIntegrity) * (progress / 100);
-      setHullIntegrity(parseFloat(currentIntegrity.toFixed(2)));
-
-      if (currentStep >= totalSteps) {
-        clearInterval(timer);
-        setIsRepairing(false);
-        setRepairOverride(true);
-        setHullIntegrity(100.00);
-        showBanner("❇️ Hull micro-structural integrity restored to 100.00%.");
-        addLog('SUCCESS', 'Hull micro-welding finished. System integrity stabilized at 100.00%.');
-      }
-    }, intervalTime);
-  }, [isRepairing, hullIntegrity, showBanner, addLog]);
-
   // 3b. Global keyboard shortcuts: Ctrl+T (switch views), Shift+R (manual repair)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1544,54 +1076,13 @@ ${nodeDetails}
           handleRepair();
         }
       }
-
-      // Trigger when Shift+U is pressed (clears all locked nodes in the current selection)
-      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'U' || e.key === 'u')) {
-        e.preventDefault();
-        const targetNodeIds = selectedDiagnosticNodeIds.length > 0
-          ? selectedDiagnosticNodeIds
-          : computedStressZones.map(z => z.id);
-
-        const lockedInTarget = targetNodeIds.filter(id => !!lockedDiagnosticNodes[id]);
-
-        if (lockedInTarget.length > 0) {
-          executeBatchUnlock(lockedInTarget);
-        } else {
-          showBanner(`ℹ️ SHIFT+U RECOVERY: No locked nodes found in current selection.`);
-        }
-      }
-
-      // Trigger when Shift+L is pressed (automatically selects and locks all diagnostic nodes reporting stress > 85%)
-      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'L' || e.key === 'l')) {
-        e.preventDefault();
-        const highStressNodes = computedStressZones.filter(z => z.stress > 0.85);
-        if (highStressNodes.length > 0) {
-          const highStressIds = highStressNodes.map(n => n.id);
-          setSelectedDiagnosticNodeIds(highStressIds);
-          executeBatchLock(highStressIds);
-        } else {
-          showBanner(`ℹ️ SHIFT+L LOCK: No diagnostic nodes currently exceed 85% stress threshold.`);
-        }
-      }
-
-      // Trigger when Shift+B is pressed (Bulk repair selected diagnostic nodes)
-      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'B' || e.key === 'b')) {
-        e.preventDefault();
-        executeBulkRepair();
-      }
-
-      // Trigger when ? is pressed
-      if (e.key === '?') {
-        e.preventDefault();
-        setIsShortcutsOpen(prev => !prev);
-      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hullIntegrity, isRepairing, handleRepair, selectedDiagnosticNodeIds, setSelectedDiagnosticNodeIds, computedStressZones, lockedDiagnosticNodes, executeBatchLock, executeBatchUnlock, executeBulkRepair, showBanner]);
+  }, [hullIntegrity, isRepairing, handleRepair]);
 
   // 3c. Real-time Hull Integrity fluctuation anchored to system vitality
   useEffect(() => {
@@ -2079,6 +1570,44 @@ ${nodeDetails}
     }
   };
 
+  function handleRepair() {
+    if (isRepairing) return;
+    setIsRepairing(true);
+    setRepairProgress(0);
+    setRepairOverride(false);
+    setRepairCyclesCount(prev => prev + 1);
+    setCumulativeNanitesDischarged(prev => prev + 2500);
+    
+    const startIntegrity = hullIntegrity;
+    const targetIntegrity = 100.00;
+    showBanner("🛠️ Commencing hull micro-welding and structural nanite injection...");
+    addLog('REPAIR', `Structural restoration sequence initiated at ${startIntegrity.toFixed(2)}% integrity.`);
+
+    const duration = 5000; // 5 seconds
+    const intervalTime = 50; // Update every 50ms
+    const totalSteps = duration / intervalTime;
+    let currentStep = 0;
+
+    const timer = setInterval(() => {
+      currentStep++;
+      const progress = (currentStep / totalSteps) * 100;
+      setRepairProgress(progress);
+      
+      // Interpolate hull integrity from startIntegrity to 100
+      const currentIntegrity = startIntegrity + (targetIntegrity - startIntegrity) * (progress / 100);
+      setHullIntegrity(parseFloat(currentIntegrity.toFixed(2)));
+
+      if (currentStep >= totalSteps) {
+        clearInterval(timer);
+        setIsRepairing(false);
+        setRepairOverride(true);
+        setHullIntegrity(100.00);
+        showBanner("❇️ Hull micro-structural integrity restored to 100.00%.");
+        addLog('SUCCESS', 'Hull micro-welding finished. System integrity stabilized at 100.00%.');
+      }
+    }, intervalTime);
+  };
+
   const handleFullOverhaul = () => {
     if (isOverhauling || isRepairing) return;
     setIsOverhauling(true);
@@ -2227,6 +1756,8 @@ ${nodeDetails}
 
     return (
       <div className="relative w-full h-[360px] select-none">
+      <OracleResonanceHUD />
+
         <svg 
           ref={navigationRingSvgRef}
           viewBox="0 0 400 400" 
@@ -2277,31 +1808,11 @@ ${nodeDetails}
             .animate-load-pulse {
               animation: loadGlowPulse 1.8s ease-in-out infinite;
             }
-            @keyframes bulkRepairEnergyDash {
-              0% { stroke-dashoffset: 48; }
-              100% { stroke-dashoffset: 0; }
-            }
-            @keyframes bulkRepairGlowAura {
-              0%, 100% { opacity: 0.45; filter: drop-shadow(0 0 8px #10b981); }
-              50% { opacity: 0.95; filter: drop-shadow(0 0 24px #34d399); }
-            }
-            .animate-bulk-repair-dash {
-              animation: bulkRepairEnergyDash 0.8s linear infinite;
-            }
-            .animate-bulk-repair-aura {
-              animation: bulkRepairGlowAura 1.4s ease-in-out infinite;
-            }
           `}</style>
           <radialGradient id="polaris-glow" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="35%" stopColor={isCriticalActive ? "#ef4444" : "#ffd700"} stopOpacity="0.8" />
             <stop offset="100%" stopColor={isCriticalActive ? "#ef4444" : "#ffd700"} stopOpacity="0" />
-          </radialGradient>
-          <radialGradient id="emerald-nanite-glow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="30%" stopColor="#34d399" stopOpacity="0.9" />
-            <stop offset="65%" stopColor="#10b981" stopOpacity="0.5" />
-            <stop offset="100%" stopColor="#059669" stopOpacity="0" />
           </radialGradient>
           <filter id="neon" x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="5" result="blur" />
@@ -2329,38 +1840,6 @@ ${nodeDetails}
           opacity={isCriticalActive ? "0.9" : "0.6"}
         />
 
-        {/* Global Vessel-Wide Nanite Surge Pulse on Navigation Ring during Bulk Repair */}
-        {Object.values(recentlyRepairedNodes).some((r: { time: number; prevStress: number }) => Date.now() - r.time < 3500) && (
-          <g pointerEvents="none">
-            <ellipse 
-              cx={cx} 
-              cy={cy} 
-              rx={r} 
-              ry={r * Math.cos(tilt)} 
-              transform={`rotate(23.5 ${cx} ${cy})`}
-              fill="none" 
-              stroke="#10b981" 
-              strokeWidth="4" 
-              filter="url(#neon)" 
-              className="animate-pulse" 
-              opacity="0.9" 
-            />
-            <ellipse 
-              cx={cx} 
-              cy={cy} 
-              rx={r + 6} 
-              ry={(r + 6) * Math.cos(tilt)} 
-              transform={`rotate(23.5 ${cx} ${cy})`}
-              fill="none" 
-              stroke="#34d399" 
-              strokeWidth="2" 
-              strokeDasharray="12 6" 
-              className="animate-bulk-repair-dash" 
-              opacity="0.85" 
-            />
-          </g>
-        )}
-
         {/* Inner Nodes Orbit */}
         <ellipse 
           cx={cx} 
@@ -2386,9 +1865,6 @@ ${nodeDetails}
           const y = cy + (x_rot * Math.sin(rotAngle) + y_rot * Math.cos(rotAngle));
 
           const correspondingZone = computedStressZones[i] || { id: `N-${i}`, name: `NODE N-${i}`, angle: Math.round((angle * 180) / Math.PI), stress: 0.25 };
-          const queueItem = repairTaskQueue.find(item => item.nodeId === correspondingZone.id && item.status === 'QUEUED');
-          const pendingQueue = repairTaskQueue.filter(item => item.status === 'QUEUED');
-          const queueIndex = queueItem ? pendingQueue.findIndex(item => item.id === queueItem.id) + 1 : null;
 
           return (
             <g 
@@ -2415,14 +1891,6 @@ ${nodeDetails}
               <text x={x + 6} y={y + 3} fill={correspondingZone.locked ? "#60a5fa" : (hoveredDiagnosticNode?.id === correspondingZone.id ? "#ffffff" : "#4e657f")} fontFamily="monospace" fontSize="7" className="transition-all duration-200 font-bold">
                 {correspondingZone.locked ? '🔒 ' : ''}{correspondingZone.name.split('-')[0].split(' ')[0] || `N-${i}`}
               </text>
-              {queueIndex !== null && (
-                <g transform={`translate(${x - 14}, ${y - 12})`}>
-                  <rect width="18" height="9" rx="2" fill="#0891b2" opacity="0.95" stroke="#22d3ee" strokeWidth="0.5" />
-                  <text x="9" y="6.5" fill="#ffffff" fontFamily="monospace" fontSize="6.5" fontWeight="extrabold" textAnchor="middle">
-                    #{queueIndex}
-                  </text>
-                </g>
-              )}
             </g>
           );
         })}
@@ -2807,9 +2275,6 @@ ${nodeDetails}
           const zoneQuadNum = Math.floor(normAngle / 90) + 1;
           const isPingHighlighted = pingedQuadrant && (Date.now() - pingedQuadrant.time < 12000) && (pingedQuadrant.quadNum === zoneQuadNum);
 
-          const recentRepair = recentlyRepairedNodes[zone.id];
-          const isRecentlyRepaired = recentRepair && (Date.now() - recentRepair.time < 3500);
-
           return (
             <g 
               key={`stress-overlay-${zone.id}`} 
@@ -2836,12 +2301,10 @@ ${nodeDetails}
                 y1={cy} 
                 x2={x} 
                 y2={y} 
-                stroke={isRecentlyRepaired ? "#34d399" : (isSelected ? "#06b6d4" : color)} 
-                strokeWidth={isRecentlyRepaired ? 2.8 : (isSelected ? 2 : (isHighStress ? 1.5 : 0.6))} 
-                strokeDasharray={isRecentlyRepaired ? "6,3" : "2,3"} 
-                opacity={isRecentlyRepaired ? 0.95 : (isSelected ? 0.95 : (isHighStress ? 0.8 : 0.35))} 
-                className={isRecentlyRepaired ? "animate-bulk-repair-dash" : undefined}
-                filter={isRecentlyRepaired ? "url(#neon)" : undefined}
+                stroke={isSelected ? "#06b6d4" : color} 
+                strokeWidth={isSelected ? 2 : (isHighStress ? 1.5 : 0.6)} 
+                strokeDasharray="2,3" 
+                opacity={isSelected ? 0.95 : (isHighStress ? 0.8 : 0.35)} 
               />
 
               {/* Selection Ring Highlight */}
@@ -2903,144 +2366,7 @@ ${nodeDetails}
                   </text>
                 </g>
               )}
-
-              {/* Simultaneous Bulk Repair Glowing Pulse & Shockwave Highlight */}
-              {isRecentlyRepaired && (
-                <g pointerEvents="none">
-                  {/* Radial Nanite Energy Aura */}
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={46} 
-                    fill="url(#emerald-nanite-glow)" 
-                    className="animate-bulk-repair-aura" 
-                  />
-                  {/* Outer Expanding Ping Shockwave */}
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={52} 
-                    fill="none" 
-                    stroke="#10b981" 
-                    strokeWidth="3.5" 
-                    className="animate-ping" 
-                    opacity="0.9" 
-                  />
-                  {/* Secondary Pulsing Wave */}
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={36} 
-                    fill="none" 
-                    stroke="#34d399" 
-                    strokeWidth="2.2" 
-                    className="animate-pulse" 
-                    opacity="0.85" 
-                  />
-                  {/* Rotating Orbital Nanite Flux Ring */}
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={26} 
-                    fill="none" 
-                    stroke="#6ee7b7" 
-                    strokeWidth="1.8" 
-                    strokeDasharray="8 4" 
-                    className="animate-spin duration-[1800ms]" 
-                  />
-                  {/* Glowing Core Aura */}
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={16} 
-                    fill="rgba(16, 185, 129, 0.55)" 
-                    stroke="#a7f3d0" 
-                    strokeWidth="2" 
-                    filter="url(#neon)" 
-                  />
-                  {/* Floating Status Badge */}
-                  <g transform={`translate(${x}, ${y - 24})`}>
-                    <rect 
-                      x="-44" 
-                      y="-10" 
-                      width="88" 
-                      height="16" 
-                      fill="#022c22" 
-                      stroke="#34d399" 
-                      strokeWidth="1.2" 
-                      rx="4" 
-                      opacity="0.95"
-                    />
-                    <text 
-                      x="0" 
-                      y="1.5" 
-                      fill="#a7f3d0" 
-                      fontFamily="monospace" 
-                      fontSize="7.5" 
-                      fontWeight="extrabold" 
-                      textAnchor="middle" 
-                      stroke="#000" 
-                      strokeWidth="1.5" 
-                      paintOrder="stroke"
-                      className="animate-pulse"
-                    >
-                      ⚡ BULK REPAIRED
-                    </text>
-                  </g>
-                </g>
-              )}
               
-              {/* Persistent Dimmed Lock Overlay for Locked Nodes (visualizes locked state even when unselected) */}
-              {zone.locked && (
-                <g pointerEvents="none" className="transition-opacity duration-300">
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={26} 
-                    fill="rgba(15, 23, 42, 0.75)" 
-                    stroke="#2563eb" 
-                    strokeWidth={isSelected ? "1.8" : "1.2"} 
-                    strokeDasharray="3 2" 
-                    opacity={isSelected ? 0.6 : 0.95} 
-                  />
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r={18} 
-                    fill="rgba(30, 58, 138, 0.40)" 
-                    stroke="#60a5fa" 
-                    strokeWidth="0.8" 
-                    opacity={isSelected ? 0.5 : 0.85} 
-                  />
-                  {!isSelected && (
-                    <g transform={`translate(${x}, ${y - 22})`}>
-                      <rect 
-                        x="-30" 
-                        y="-8" 
-                        width="60" 
-                        height="12" 
-                        fill="#030712" 
-                        stroke="#3b82f6" 
-                        strokeWidth="0.8" 
-                        rx="3" 
-                        opacity="0.9" 
-                      />
-                      <text 
-                        x="0" 
-                        y="1" 
-                        fill="#93c5fd" 
-                        fontFamily="monospace" 
-                        fontSize="6" 
-                        fontWeight="extrabold" 
-                        textAnchor="middle"
-                      >
-                        🔒 LOCKED
-                      </text>
-                    </g>
-                  )}
-                </g>
-              )}
-
               {/* Heat glow circles */}
               <circle 
                 cx={x} 
@@ -3511,81 +2837,84 @@ ${nodeDetails}
 
           <div className="grid grid-cols-2 gap-1.5">
             <button
-              onClick={() => executeBatchLock(selectedDiagnosticNodeIds)}
+              onClick={() => {
+                setLockedDiagnosticNodes(prev => {
+                  const next = { ...prev };
+                  selectedDiagnosticNodeIds.forEach(id => { next[id] = true; });
+                  return next;
+                });
+                triggerLockAnimation(selectedDiagnosticNodeIds, true);
+                addLog('INFO', `Batch Lock: Locked ${selectedDiagnosticNodeIds.length} diagnostic nodes.`);
+                showBanner(`🔒 BATCH LOCK: Successfully locked ${selectedDiagnosticNodeIds.length} selected nodes!`);
+              }}
               className="py-1.5 px-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-200 border border-blue-500/40 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
-              title="Lock selected nodes (Prompts confirmation if >5 nodes; Shortcut Shift+L)"
             >
               <Lock className="w-2.5 h-2.5 text-blue-400" />
-              <span>Lock (Shift+L)</span>
+              <span>Lock</span>
             </button>
 
             <button
-              onClick={() => executeBatchUnlock(selectedDiagnosticNodeIds)}
+              onClick={() => {
+                setLockedDiagnosticNodes(prev => {
+                  const next = { ...prev };
+                  selectedDiagnosticNodeIds.forEach(id => { next[id] = false; });
+                  return next;
+                });
+                triggerLockAnimation(selectedDiagnosticNodeIds, false);
+                addLog('INFO', `Batch Unlock: Unlocked ${selectedDiagnosticNodeIds.length} diagnostic nodes.`);
+                showBanner(`🔓 BATCH UNLOCK: Successfully unlocked ${selectedDiagnosticNodeIds.length} selected nodes!`);
+              }}
               className="py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
-              title="Unlock selected nodes (Prompts confirmation if >5 nodes; Shortcut Shift+U)"
             >
               <Unlock className="w-2.5 h-2.5 text-slate-300" />
-              <span>Unlock (Shift+U)</span>
+              <span>Unlock</span>
             </button>
           </div>
 
-          {/* Main Bulk Repair Action Button */}
           <button
-            onClick={() => executeBulkRepair(selectedDiagnosticNodeIds)}
-            className="w-full py-2 px-2.5 bg-gradient-to-r from-emerald-600/30 to-teal-600/30 hover:from-emerald-600/50 hover:to-teal-600/50 text-emerald-200 hover:text-white border border-emerald-400/60 rounded-sm font-mono font-extrabold uppercase text-[9px] tracking-wider cursor-pointer flex items-center justify-center gap-2 transition-all shadow-[0_0_12px_rgba(16,185,129,0.3)] hover:shadow-[0_0_18px_rgba(16,185,129,0.5)] active:scale-[0.98] group"
-            title="Simultaneously repair all selected diagnostic nodes with a single interaction (Shortcut: Shift+B)"
+            onClick={() => {
+              const unlockedSelected = computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked);
+              if (unlockedSelected.length > 0) {
+                const overrides: Record<string, number> = {};
+                unlockedSelected.forEach(node => {
+                  overrides[node.id] = 0.10;
+                  addLog('REPAIR', `Quick Reset Surge: Instantly discharged nanites to segment ${node.name} (reset to 10% nominal baseline).`);
+                });
+                setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
+                setCumulativeNanitesDischarged(prev => prev + 250 * unlockedSelected.length);
+                showBanner(`⚡ QUICK RESET: Instantly discharged nanite surge to ${unlockedSelected.length} selected nodes!`);
+              } else {
+                showBanner(`⚠️ QUICK RESET BLOCKED: All selected nodes are locked!`);
+              }
+            }}
+            className="w-full py-1.5 px-2 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-200 hover:text-white border border-emerald-500/40 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-sm"
+            title="Instantly discharge nanites to all selected unlocked nodes, bypassing individual interaction"
           >
-            <Wrench className="w-3.5 h-3.5 text-emerald-400 group-hover:rotate-45 transition-transform duration-300" />
-            <span>BULK REPAIR ({computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked).length} UNLOCKED)</span>
+            <RotateCcw className="w-3 h-3 text-emerald-400 animate-spin duration-[4000ms]" />
+            <span>Quick Reset ({computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked).length} Nodes)</span>
           </button>
 
-          <div className="flex gap-1">
-            <button
-              onClick={() => {
-                const unlockedSelected = computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked);
-                if (unlockedSelected.length > 0) {
-                  const overrides: Record<string, number> = {};
-                  unlockedSelected.forEach(node => {
-                    overrides[node.id] = 0.10;
-                    addLog('REPAIR', `Quick Reset Surge: Instantly discharged nanites to segment ${node.name} (reset to 10% nominal baseline).`);
-                  });
-                  setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
-                  setCumulativeNanitesDischarged(prev => prev + 250 * unlockedSelected.length);
-                  showBanner(`⚡ QUICK RESET: Instantly discharged nanite surge to ${unlockedSelected.length} selected nodes!`);
-                } else {
-                  showBanner(`⚠️ QUICK RESET BLOCKED: All selected nodes are locked!`);
-                }
-              }}
-              className="flex-1 py-1 px-1.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
-              title="Quick Reset stress to 10%"
-            >
-              <RotateCcw className="w-2.5 h-2.5 text-emerald-400" />
-              <span>Reset</span>
-            </button>
-
-            <button
-              onClick={() => {
-                const unlockedSelected = computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked);
-                if (unlockedSelected.length > 0) {
-                  const overrides: Record<string, number> = {};
-                  unlockedSelected.forEach(node => {
-                    overrides[node.id] = 0.15;
-                    addLog('REPAIR', `Batch Nanite Discharge: Fully discharged segment ${node.name} to 15%.`);
-                  });
-                  setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
-                  setCumulativeNanitesDischarged(prev => prev + 150 * unlockedSelected.length);
-                  showBanner(`⚡ BATCH DISCHARGE: Stabilized ${unlockedSelected.length} selected nodes!`);
-                } else {
-                  showBanner(`⚠️ BATCH DISCHARGE BLOCKED: All selected nodes are locked!`);
-                }
-              }}
-              className="flex-1 py-1 px-1.5 bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all"
-              title="Discharge stress to 15%"
-            >
-              <Zap className="w-2.5 h-2.5 text-amber-400" />
-              <span>Discharge</span>
-            </button>
-          </div>
+          <button
+            onClick={() => {
+              const unlockedSelected = computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked);
+              if (unlockedSelected.length > 0) {
+                const overrides: Record<string, number> = {};
+                unlockedSelected.forEach(node => {
+                  overrides[node.id] = 0.15;
+                  addLog('REPAIR', `Batch Nanite Discharge: Fully discharged segment ${node.name} to 15%.`);
+                });
+                setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
+                setCumulativeNanitesDischarged(prev => prev + 150 * unlockedSelected.length);
+                showBanner(`⚡ BATCH DISCHARGE: Stabilized ${unlockedSelected.length} selected nodes!`);
+              } else {
+                showBanner(`⚠️ BATCH DISCHARGE BLOCKED: All selected nodes are locked!`);
+              }
+            }}
+            className="w-full py-1.5 px-2 bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 hover:text-white border border-amber-500/40 rounded-sm font-bold uppercase text-[8px] tracking-wider cursor-pointer flex items-center justify-center gap-1 transition-all shadow-sm"
+          >
+            <Zap className="w-3 h-3 text-amber-400 animate-pulse" />
+            <span>Discharge ({computedStressZones.filter(z => selectedDiagnosticNodeIds.includes(z.id) && !z.locked).length})</span>
+          </button>
         </div>
       ) : (
         <div className="absolute top-3 left-3 z-30 flex flex-col gap-1.5 items-start">
@@ -3593,24 +2922,14 @@ ${nodeDetails}
             <span className="animate-pulse">🎯</span>
             <span>Click & drag on ring to select multiple nodes</span>
           </div>
-          <div className="flex gap-1.5 items-center">
-            <button
-              onClick={() => executeBulkRepair()}
-              className="bg-emerald-950/90 hover:bg-emerald-900/90 active:bg-emerald-800/90 border border-emerald-500/50 hover:border-emerald-400 text-emerald-300 hover:text-white px-2.5 py-1 rounded shadow-lg text-[8px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-all select-none"
-              title="Bulk repair all diagnostic nodes with elevated stress (Shortcut: Shift+B)"
-            >
-              <Wrench className="w-3 h-3 text-emerald-400" />
-              <span>Bulk Repair Stressed</span>
-            </button>
-            <button
-              onClick={handlePingSector}
-              className="bg-slate-950/90 hover:bg-amber-950/80 active:bg-amber-900/90 border border-amber-500/40 hover:border-amber-500/70 text-amber-300 hover:text-white px-2 py-1 rounded shadow-lg text-[8px] font-mono font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all select-none"
-              title="Ping Navigation Ring to temporarily highlight quadrant with highest aggregate stress"
-            >
-              <Radio className="w-3 h-3 text-amber-400 animate-pulse" />
-              <span>Ping Sector</span>
-            </button>
-          </div>
+          <button
+            onClick={handlePingSector}
+            className="bg-slate-950/90 hover:bg-amber-950/80 active:bg-amber-900/90 border border-amber-500/40 hover:border-amber-500/70 text-amber-300 hover:text-white px-2 py-1 rounded shadow-lg text-[8px] font-mono font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all select-none"
+            title="Ping Navigation Ring to temporarily highlight quadrant with highest aggregate stress"
+          >
+            <Radio className="w-3 h-3 text-amber-400 animate-pulse" />
+            <span>Ping Sector</span>
+          </button>
         </div>
       )}
 
@@ -3759,35 +3078,6 @@ ${nodeDetails}
                 <span>{isLocked ? 'Discharge Prevented' : 'Discharge Nanites'}</span>
               </button>
 
-              {/* Task Queue Flag / Unflag Button */}
-              {(() => {
-                const isQueued = repairTaskQueue.some(item => item.nodeId === hoveredDiagnosticNode.id && item.status === 'QUEUED');
-                const queueItem = repairTaskQueue.find(item => item.nodeId === hoveredDiagnosticNode.id && item.status === 'QUEUED');
-                const pendingQ = repairTaskQueue.filter(item => item.status === 'QUEUED');
-                const qPos = queueItem ? pendingQ.findIndex(item => item.id === queueItem.id) + 1 : null;
-
-                return (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (isQueued && queueItem) {
-                        handleDequeueNode(queueItem.id);
-                      } else {
-                        handleEnqueueNode(hoveredDiagnosticNode.id);
-                      }
-                    }}
-                    className={`w-full py-1.5 px-2 rounded-sm text-[8px] font-bold uppercase tracking-wider transition-all shadow-sm flex items-center justify-center gap-1 border ${
-                      isQueued
-                        ? 'bg-cyan-950 hover:bg-cyan-900 border-cyan-500/60 text-cyan-300'
-                        : 'bg-slate-900/80 hover:bg-slate-800 border-cyan-500/30 text-slate-300 hover:text-cyan-300'
-                    }`}
-                  >
-                    <ListPlus className="w-2.5 h-2.5 text-cyan-400" />
-                    <span>{isQueued ? `Flagged in Queue (#${qPos})` : 'Flag for Task Queue'}</span>
-                  </button>
-                );
-              })()}
-
               {/* Full Quadrant Reset with Confirmation Dialog */}
               {quadrantConfirmNodeId === hoveredDiagnosticNode.id ? (
                 <div className="p-1.5 bg-red-950/80 border border-red-500/50 rounded flex flex-col gap-1 text-[8px]">
@@ -3870,7 +3160,14 @@ ${nodeDetails}
             <button
               onClick={() => {
                 const highStressIds = highStressNodes.map(n => n.id);
-                executeBatchLock(highStressIds);
+                setLockedDiagnosticNodes(prev => {
+                  const next = { ...prev };
+                  highStressIds.forEach(id => { next[id] = true; });
+                  return next;
+                });
+                triggerLockAnimation(highStressIds, true);
+                addLog('INFO', `Mass Lock: Programmatically locked all ${highStressIds.length} nodes exceeding 80% stress threshold.`);
+                showBanner(`🔒 LOCK ALL NODES: Locked ${highStressIds.length} critical stress nodes!`);
               }}
               className="w-full py-1.5 px-2 bg-blue-600/20 hover:bg-blue-600/40 active:bg-blue-600/60 text-blue-200 hover:text-white border border-blue-500/40 hover:border-blue-500/60 rounded-sm font-bold uppercase tracking-wider transition-all cursor-pointer shadow-sm flex items-center justify-center gap-1"
             >
@@ -3905,6 +3202,39 @@ ${nodeDetails}
     </div>
     );
   };
+
+  // Dynamic Heartbeat System Vitality Configuration
+  const heartbeatDetails = useMemo(() => {
+    // hullIntegrity ranges from 90.0 to 100.0
+    if (hullIntegrity >= 96.0) {
+      return {
+        bpm: Math.round(60 + (hullIntegrity - 96.0) * 2.5), // ~60 to 70 BPM
+        colorClass: 'text-emerald-400',
+        glowColor: '#10b981',
+        pulseSpeed: '1.2s',
+        statusText: 'NOMINAL VITALITY',
+        bgClass: 'bg-emerald-500/10 border-emerald-500/20'
+      };
+    } else if (hullIntegrity >= 93.0) {
+      return {
+        bpm: Math.round(80 + (96.0 - hullIntegrity) * 6), // ~80 to 98 BPM
+        colorClass: 'text-amber-500',
+        glowColor: '#f59e0b',
+        pulseSpeed: '0.8s',
+        statusText: 'STRESSED DEVIATION',
+        bgClass: 'bg-amber-500/10 border-amber-500/20'
+      };
+    } else {
+      return {
+        bpm: Math.round(110 + (93.0 - hullIntegrity) * 16), // ~110 to 158+ BPM
+        colorClass: 'text-red-500',
+        glowColor: '#ef4444',
+        pulseSpeed: '0.45s',
+        statusText: 'CRITICAL INSTABILITY',
+        bgClass: 'bg-red-500/10 border-red-500/20 animate-pulse'
+      };
+    }
+  }, [hullIntegrity]);
 
   return (
     <div className="bg-[#050505] text-slate-300 min-h-screen font-sans antialiased selection:bg-amber-500/30 selection:text-white">
@@ -4026,80 +3356,33 @@ ${nodeDetails}
             </div>
           </div>
 
-          {/* Unified Controls & Tab Selector */}
-          <div className="flex flex-col items-start sm:items-end w-full md:w-auto gap-2">
-            <div className="flex flex-wrap items-center justify-start sm:justify-end gap-2 w-full">
+          {/* Unified Tab Selector */}
+          <div className="flex flex-col items-end gap-1">
+            <div className="bg-black/40 p-1 rounded-sm border border-white/10 flex gap-1 font-mono text-xs">
               <button
-                onClick={() => setIsAiCopilotOpen(true)}
-                className="px-3 py-2 rounded-sm bg-cyan-500/15 hover:bg-cyan-500/25 active:bg-cyan-500/35 text-cyan-300 hover:text-cyan-200 border border-cyan-500/40 hover:border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.15)] transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
-                title="Launch SYNARA-AI Tactical Copilot & Diagnostic Officer (Gemini 3.6)"
+                onClick={() => setActiveTab('council')}
+                className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+                  activeTab === 'council' 
+                    ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
+                    : 'text-slate-400 hover:text-white'
+                }`}
               >
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-                <span>SYNARA-AI Copilot</span>
+                <Table className="w-3.5 h-3.5" />
+                Sovereign Council Dashboard
               </button>
-
               <button
-                onClick={() => setIsShortcutsOpen(true)}
-                className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
-                title="Keyboard Shortcuts & Hotkeys Guide (?)"
+                onClick={() => setActiveTab('bridge')}
+                className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+                  activeTab === 'bridge' 
+                    ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
+                    : 'text-slate-400 hover:text-white'
+                }`}
               >
-                <Keyboard className="w-3.5 h-3.5 text-amber-400" />
-                <span>Shortcuts</span>
+                <Navigation className="w-3.5 h-3.5" />
+                FPT-Ω Vessel Bridge
               </button>
-
-              <button
-                onClick={() => setIsWorkspaceOpen(true)}
-                className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
-                title="Open Google Workspace Deck (Drive, Sheets, Gmail, Docs)"
-              >
-                <Share2 className="w-3.5 h-3.5 text-amber-400" />
-                <span>Workspace Deck</span>
-              </button>
-
-              <button
-                onClick={handleShareBridgeStatus}
-                className="px-3 py-2 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer flex items-center gap-1.5 font-mono text-xs uppercase font-bold tracking-wider"
-                title="Copy current hull integrity, resonance levels, and active diagnostic status summary to clipboard"
-              >
-                {isShareCopied ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-400 font-bold">Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Share2 className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Share Bridge Status</span>
-                  </>
-                )}
-              </button>
-
-              <div className="bg-black/40 p-1 rounded-sm border border-white/10 flex gap-1 font-mono text-xs">
-                <button
-                  onClick={() => setActiveTab('council')}
-                  className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
-                    activeTab === 'council' 
-                      ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Table className="w-3.5 h-3.5" />
-                  Sovereign Council Dashboard
-                </button>
-                <button
-                  onClick={() => setActiveTab('bridge')}
-                  className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
-                    activeTab === 'bridge' 
-                      ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30 shadow-md font-semibold' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Navigation className="w-3.5 h-3.5" />
-                  FPT-Ω Vessel Bridge
-                </button>
-              </div>
             </div>
-            <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase mr-1">Shortcuts: Ctrl+T (Toggle View) | Shift+R (Manual Repair) | Shift+B (Bulk Repair Nodes) | Shift+L (Lock Critical) | Shift+U (Unlock Selection)</span>
+            <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase mr-1">Shortcuts: Ctrl+T (Toggle View) | Shift+R (Manual Repair)</span>
           </div>
         </header>
 
@@ -4816,14 +4099,6 @@ ${nodeDetails}
                       />
                       <span>Granular Heatmap</span>
                     </label>
-                    <button
-                      onClick={() => executeBulkRepair()}
-                      className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/35 active:bg-emerald-500/50 text-emerald-300 hover:text-white border border-emerald-500/40 hover:border-emerald-500/70 rounded-sm font-mono text-[9px] uppercase tracking-wider cursor-pointer transition-all shadow-sm select-none font-bold"
-                      title="Bulk repair all selected diagnostic nodes with a single interaction (Shortcut: Shift+B)"
-                    >
-                      <Wrench className="w-3 h-3 text-emerald-400" />
-                      <span>Bulk Repair {selectedDiagnosticNodeIds.length > 0 ? `(${selectedDiagnosticNodeIds.length})` : 'All'}</span>
-                    </button>
                     <button
                       onClick={handlePingSector}
                       className="flex items-center gap-1 px-2 py-1 bg-amber-500/20 hover:bg-amber-500/35 active:bg-amber-500/50 text-amber-300 hover:text-white border border-amber-500/40 hover:border-amber-500/70 rounded-sm font-mono text-[9px] uppercase tracking-wider cursor-pointer transition-all shadow-sm select-none"
@@ -5644,70 +4919,6 @@ ${nodeDetails}
         cancelText="Abort Purge"
         variant="danger"
         requireTextConfirm="CLEAR"
-      />
-
-      {/* Batch Lock/Unlock Confirmation (>5 nodes) */}
-      <ConfirmationDialog
-        isOpen={!!batchConfirmState?.isOpen}
-        onClose={() => setBatchConfirmState(null)}
-        onConfirm={handleConfirmBatchAction}
-        title={batchConfirmState?.actionType === 'lock' ? `Batch Lock Authorization (${batchConfirmState?.targetNodeIds.length} Nodes)` : `Batch Unlock Authorization (${batchConfirmState?.targetNodeIds.length} Nodes)`}
-        description={
-          batchConfirmState?.actionType === 'lock'
-            ? `You are about to lock ${batchConfirmState?.targetNodeIds.length} diagnostic nodes simultaneously across the Navigation Ring array. Locking more than 5 nodes alters bridge-wide structural constraint parameters.`
-            : `You are about to unlock ${batchConfirmState?.targetNodeIds.length} diagnostic nodes simultaneously across the Navigation Ring array. Unlocking more than 5 nodes releases structural constraint parameters on a major portion of the vessel.`
-        }
-        confirmText={batchConfirmState?.actionType === 'lock' ? `Authorize Lock (${batchConfirmState?.targetNodeIds.length})` : `Authorize Unlock (${batchConfirmState?.targetNodeIds.length})`}
-        cancelText="Abort Action"
-        variant={batchConfirmState?.actionType === 'lock' ? 'warning' : 'info'}
-      />
-
-      {/* Google Workspace Deck Drawer Modal */}
-      <WorkspaceHub
-        isOpen={isWorkspaceOpen}
-        onClose={() => setIsWorkspaceOpen(false)}
-        accessToken={googleAccessToken}
-        onSignInRequest={handleGoogleSignIn}
-        hullIntegrity={hullIntegrity}
-        resonance={ledger.resonance}
-        computedStressZones={computedStressZones}
-        briefingNarrative={activeBriefing.briefing_narrative}
-        addLog={addLog}
-        showBanner={showBanner}
-      />
-
-      {/* Keyboard Shortcuts Help Modal */}
-      <ShortcutsHelpModal
-        isOpen={isShortcutsOpen}
-        onClose={() => setIsShortcutsOpen(false)}
-      />
-
-      {/* SYNARA-AI Tactical Copilot Modal */}
-      <AiCopilotModal
-        isOpen={isAiCopilotOpen}
-        onClose={() => setIsAiCopilotOpen(false)}
-        vesselState={{
-          hullIntegrity,
-          resonance: ledger.resonance,
-          computedStressZones,
-          nanitesUsed: cumulativeNanitesDischarged
-        }}
-        onExecuteBulkRepair={(nodeIds) => {
-          if (nodeIds && nodeIds.length > 0) {
-            const overrides: Record<string, number> = {};
-            nodeIds.forEach(id => {
-              overrides[id] = 0.15;
-            });
-            setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
-            setCumulativeNanitesDischarged(prev => prev + 150 * nodeIds.length);
-            showBanner(`⚡ AI BULK REPAIR: Simultaneously stabilized ${nodeIds.length} nodes!`);
-            addLog('REPAIR', `AI Executed bulk nanite stabilization on ${nodeIds.length} nodes.`);
-          } else {
-            handleRepair();
-          }
-        }}
-        addLog={addLog}
-        showBanner={showBanner}
       />
     </div>
   );
