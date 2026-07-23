@@ -1,3 +1,4 @@
+import { queueLeaf, processEpochBatch } from "./server/merkleEngine";
 import { logger } from "./src/utils/logger";
 import { ethers } from "ethers";
 import express from 'express';
