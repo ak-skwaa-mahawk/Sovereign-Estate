@@ -1,4 +1,4 @@
-import { queueLeaf, processEpochBatch } from "./server/merkleEngine";
+import { queueLeaf, processEpochBatch, generateInclusionProof } from "./server/merkleEngine";
 import { logger } from "./src/utils/logger";
 import { ethers } from "ethers";
 import express from 'express';
@@ -11,7 +11,6 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import oracleRouter, { hydrateStateFromChain } from './server/routes/oracle';
-import { OracleRelayer } from './src/relayer';
 
 let resonance = 85.43;
 let baseEarnings = 1.234567;
@@ -177,6 +176,12 @@ let currentActiveNetwork = "sepolia";
 
 // API: Manual Relayer Pulse Trigger
 app.post("/api/relayer/pulse", async (req, res) => {
+    const { commitHash, ipfsCid } = req.body || {};
+    if (commitHash && ipfsCid) {
+      console.log("🍃 Queuing leaf to relayer.db...", commitHash.slice(0, 8), ipfsCid.slice(0, 12));
+      queueLeaf(commitHash, ipfsCid).then(() => processEpochBatch(8)).catch(err => console.error("❌ Queue error:", err));
+    }
+  
   try {
     console.log("⚡ [Manual Trigger] Initiating Relayer Pulse...");
     
@@ -459,4 +464,13 @@ async function startServer() {
 
 startServer().catch((err) => {
   console.error('Failed to start server:', err);
+});
+
+app.get("/api/relayer/proof/:commitHash", async (req, res) => {
+  try {
+    const proofData = await generateInclusionProof(req.params.commitHash);
+    res.json(proofData);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });

@@ -3,7 +3,6 @@ import fs from "fs";
 import path from "path";
 import { ethers } from "ethers";
 import { MerkleTree } from "merkletreejs";
-import keccak256 from "keccak256";
 
 const DB_PATH = path.join(process.cwd(), "relayer.db");
 let dbInstance: Database | null = null;
@@ -99,7 +98,7 @@ export async function processEpochBatch(threshold: number = 8) {
   }
 
   const leafHashes = pendingLeaves.map((l) => l.leaf_hash);
-  const tree = new MerkleTree(leafHashes, keccak256, { sortPairs: true });
+  const tree = new MerkleTree(leafHashes, ethers.keccak256, { sortPairs: true });
   const merkleRoot = tree.getHexRoot();
 
   db.run("INSERT INTO epochs (merkle_root, leaf_count) VALUES (?, ?)", [
@@ -121,5 +120,47 @@ export async function processEpochBatch(threshold: number = 8) {
     epochId: newEpochId,
     merkleRoot,
     leafCount: pendingLeaves.length,
+  };
+}
+
+/**
+ * Generate cryptographic inclusion proof for a given commit hash
+ */
+export async function generateInclusionProof(commitHash: string) {
+  const db = await getDb();
+  
+  // Find target leaf
+  const leafRes = db.exec(`SELECT epoch_id, leaf_hash FROM leaves WHERE commit_hash = '${commitHash}'`);
+  if (!leafRes.length || !leafRes[0].values.length) {
+    return { status: "not_found", message: "Commit not found in database." };
+  }
+
+  const epochId = leafRes[0].values[0][0] as number | null;
+  const targetLeafHash = leafRes[0].values[0][1] as string;
+
+  if (!epochId) {
+    return { status: "pending", message: "Commit is queued but not yet anchored in a sealed epoch." };
+  }
+
+  // Fetch epoch root
+  const epochRes = db.exec(`SELECT merkle_root FROM epochs WHERE epoch_id = ${epochId}`);
+  const merkleRoot = epochRes[0].values[0][0] as string;
+
+  // Fetch all leaves belonging to this epoch to reconstruct tree
+  const allLeavesRes = db.exec(`SELECT leaf_hash FROM leaves WHERE epoch_id = ${epochId} ORDER BY id ASC`);
+  const leafHashes = allLeavesRes[0].values.map((row) => row[0] as string);
+
+  const tree = new MerkleTree(leafHashes, ethers.keccak256, { sortPairs: true });
+  const proof = tree.getHexProof(targetLeafHash);
+  const isValid = tree.verify(proof, targetLeafHash, merkleRoot);
+
+  return {
+    status: "verified",
+    commitHash,
+    epochId,
+    merkleRoot,
+    leafHash: targetLeafHash,
+    proof,
+    isValid,
   };
 }
