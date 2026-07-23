@@ -1,37 +1,392 @@
+import { logger } from "./src/utils/logger";
+import { ethers } from "ethers";
 import express from 'express';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+import oracleRouter, { hydrateStateFromChain } from './server/routes/oracle';
 import { OracleRelayer } from './src/relayer';
 
-// In-memory sovereign state
 let resonance = 85.43;
 let baseEarnings = 1.234567;
 let claimCount = 0;
 const startTime = Date.now();
 
-// Relayer instance reference
 let relayer: OracleRelayer | null = null;
 
-// Function to calculate live earnings (increases slightly over time)
 function getLiveEarnings() {
   const elapsedSeconds = (Date.now() - startTime) / 1000;
   return baseEarnings + (elapsedSeconds * 0.000003);
 }
 
+
+// Automated Gas Escalation & Pulse Retry Handler
+const executePulseWithRetry = async (maxAttempts = 3) => {
+  let attempt = 0;
+  let gasMultiplier = 1.0;
+
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      logger.info(`Initiating pulse attempt ${attempt}/${maxAttempts} (Gas Multiplier: ${gasMultiplier.toFixed(2)}x)`, "RelayerEngine");
+      // Enforce gas ceiling check
+      // checkGasFeeSafetyCaps(currentNetworkGasGwei, req.query?.simulateGasGwei);
+
+
+      // Execute pulse passing adjusted gas parameters if supported
+      let txResult;
+      if (relayer && typeof relayer.executePulse === "function") {
+        txResult = await relayer.executePulse({ gasMultiplier });
+      } else {
+        txResult = { status: "simulated", attempt, timestamp: new Date().toISOString() };
+      }
+
+      logger.info(`Pulse successfully executed on attempt ${attempt}`, "RelayerEngine", { txResult });
+      return { success: true, attempts: attempt, txResult };
+    } catch (err) {
+      logger.warn(`Pulse attempt ${attempt} failed: ${err.message}`, "RelayerEngine", { attempt, errorCode: err.code });
+      
+      // Escalation: increase gas parameters by 20% for next attempt
+      gasMultiplier *= 1.20;
+
+      if (attempt >= maxAttempts) {
+        recordRelayerFailure(err, "RelayerEscalationEngine");
+        throw new Error(`All ${maxAttempts} pulse attempts failed. Last error: ${err.message}`);
+      }
+
+      // Backoff delay before retry (1s, 2s...)
+      const backoffMs = attempt * 1000;
+      logger.info(`Waiting ${backoffMs}ms before retry with higher gas fee...`, "RelayerEngine");
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+};
+
+
+// Gas Price Safety Caps (Gwei)
+const MAX_GAS_PRICE_GWEI = Number(process.env.MAX_GAS_PRICE_GWEI) || 50; // Cap at 50 Gwei
+const MAX_PRIORITY_FEE_GWEI = Number(process.env.MAX_PRIORITY_FEE_GWEI) || 3; // Cap at 3 Gwei
+
+const checkGasFeeSafetyCaps = (currentGasPriceGwei, reqSimulated) => {
+    if (reqSimulated) currentGasPriceGwei = Number(reqSimulated);
+  const cap = Number(process.env.MAX_GAS_PRICE_GWEI) || 50;
+    if (currentGasPriceGwei > cap) {
+    const errorMsg = `Gas price spike detected (${currentGasPriceGwei.toFixed(2)} Gwei). Exceeds maximum safety cap of ${cap} Gwei.`;
+    logger.error(errorMsg, null, "GasSafetyGuard");
+    throw new Error(errorMsg);
+  }
+};
+
 const app = express();
-const PORT = 3000;
+
+// Relayer Observability & Error Metrics Store
+const relayerErrorMetrics = {
+  totalFailures: 0,
+  failuresByCode: {} as Record<string, number>,
+  lastFailure: null as {
+    timestamp: string;
+    message: string;
+    code: string;
+    context: string;
+  } | null,
+  recentErrorHistory: [] as Array<{ timestamp: string; message: string; code: string }>
+};
+
+const recordRelayerFailure = (err: any, context = "RelayerExecution") => {
+  relayerErrorMetrics.totalFailures += 1;
+  const errorCode = err.code || err.name || "UNKNOWN_ERROR";
+  relayerErrorMetrics.failuresByCode[errorCode] = (relayerErrorMetrics.failuresByCode[errorCode] || 0) + 1;
+
+  const failureDetails = {
+    timestamp: new Date().toISOString(),
+    message: err.message || String(err),
+    code: String(errorCode),
+    context
+  };
+
+  relayerErrorMetrics.lastFailure = failureDetails;
+  relayerErrorMetrics.recentErrorHistory.unshift({
+    timestamp: failureDetails.timestamp,
+    message: failureDetails.message,
+    code: failureDetails.code
+  });
+
+  // Keep last 10 errors
+  if (relayerErrorMetrics.recentErrorHistory.length > 10) {
+    relayerErrorMetrics.recentErrorHistory.pop();
+  }
+
+  logger.error("Relayer execution failure detected", err, context, {
+    totalFailures: relayerErrorMetrics.totalFailures,
+    errorCode
+  });
+};
+
+
+// Active SSE clients set
+const sseClients = new Set();
+
+// Function to broadcast real-time events to all connected clients
+const broadcastSSE = (eventType, payload) => {
+  const message = `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
+  sseClients.forEach((clientRes) => {
+    try {
+      clientRes.write(message);
+    } catch (err) {
+      console.error("[Broadcaster Error]", err);
+    }
+  });
+};
+
+const PORT = process.env.PORT || 3098;
 
 app.use(express.json());
 
-// --- API Routes ---
+// Explicitly register API router before any fallback middleware
+app.use('/api/oracle', oracleRouter);
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', system: 'Sovereign Manifold', relayerActive: !!relayer });
+// Health Endpoint
+
+// SSE Telemetry Stream Endpoint
+
+// Network Configuration Profiles
+const NETWORK_PROFILES = {
+  sepolia: {
+    name: "Sepolia Testnet",
+    chainId: 11155111,
+    rpcUrl: process.env.SEPOLIA_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/alch_9kE0kwAt4QoP0UYdtStb2",
+    contractAddress: process.env.SEPOLIA_CONTRACT || "0xE158659A9e83d462Ad6705948F7649AdDCb2aD75"
+  },
+  anvil: {
+    name: "Anvil Localhost",
+    chainId: 31337,
+    rpcUrl: process.env.ANVIL_RPC_URL || "http://127.0.0.1:8545",
+    contractAddress: process.env.ANVIL_CONTRACT || "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+  }
+};
+
+let currentActiveNetwork = "sepolia";
+
+// API: Switch Active Network Profile
+
+// API: Manual Relayer Pulse Trigger
+app.post("/api/relayer/pulse", async (req, res) => {
+  try {
+    console.log("⚡ [Manual Trigger] Initiating Relayer Pulse...");
+    
+    let result = { status: "simulated", timestamp: new Date().toISOString() };
+    if (relayer && typeof relayer.executePulse === "function") {
+      const retryOutcome = await executePulseWithRetry(3);
+    result = retryOutcome.txResult;
+    }
+
+    const relayerMetrics = relayer ? await relayer.getMetrics() : {};
+    
+    // Broadcast updated telemetry instantly via SSE
+    broadcastSSE("relayerPulse", {
+      status: "success",
+      pulseData: result,
+      metrics: relayerMetrics,
+      activeNetwork: currentActiveNetwork,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.json({
+      status: "ok",
+      message: "Relayer pulse executed successfully",
+      network: currentActiveNetwork,
+      metrics: relayerMetrics
+    });
+  } catch (err) {
+    recordRelayerFailure(err, "ManualPulseAPI");
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-// 1. Sovereign Ledger Endpoint
+app.post("/api/network/switch", express.json(), async (req, res) => {
+  const { network } = req.body;
+  if (!NETWORK_PROFILES[network]) {
+    return res.status(400).json({ error: "Invalid target network profile" });
+  }
+
+  try {
+    currentActiveNetwork = network;
+    const target = NETWORK_PROFILES[network];
+
+    console.log(`🔄 Switching RPC Provider profile to: ${target.name} (${target.rpcUrl})`);
+
+    // Broadcast network switch event across SSE
+    broadcastSSE("networkSwitch", {
+      activeNetwork: target.name,
+      chainId: target.chainId,
+      contractAddress: target.contractAddress,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.json({
+      status: "ok",
+      message: `Switched network to ${target.name}`,
+      activeNetwork: target,
+    });
+  } catch (err) {
+    console.error("[Network Switch Error]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/events", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+  const sendEvent = async () => {
+    try {
+      const relayerMetrics = relayer ? await relayer.getMetrics() : {};
+      const minEthThreshold = parseFloat(process.env.RELAYER_MIN_ETH || "0.005");
+      const currentRelayerBalance = parseFloat(relayerMetrics?.walletBalance || "0");
+      const isLowFunded = currentRelayerBalance < minEthThreshold;
+
+      
+      // Emit explicit low-funding alert event if threshold breached
+      if (isLowFunded) {
+        broadcastSSE("fundingAlert", {
+          level: "warning",
+          message: "Relayer reserve below threshold",
+          balance: currentRelayerBalance,
+          threshold: minEthThreshold,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const payload = {
+        relayer: relayerMetrics,
+        fundingAlert: {
+          isLowFunded,
+          thresholdEth: minEthThreshold
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch (err) {
+      console.error("[SSE Error]", err);
+    }
+  };
+
+  await sendEvent();
+  const interval = setInterval(sendEvent, 5000);
+
+  req.on("close", () => {
+    clearInterval(interval);
+  });
+});
+
+app.get("/api/health", async (req, res) => {
+  let rpcLatencyMs = -1;
+  let onChainCycle = null;
+  let rpcStatus = "degraded";
+
+  try {
+    const providerRpc = process.env.SEPOLIA_RPC_URL || process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/alch_9kE0kwAt4QoP0UYdtStb2";
+    // ethers imported at top-level
+    const provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL || providerRpc);
+    
+    const pStart = Date.now();
+    await provider.getBlockNumber();
+    rpcLatencyMs = Date.now() - pStart;
+    rpcStatus = "healthy";
+
+    const oracleAddress = process.env.ORACLE_ADDRESS || "0xE158659A9e83d462Ad6705948F7649AdDCb2aD75";
+    const oracleAbi = ["function cycleCount() view returns (uint256)"];
+    const contract = new ethers.Contract(oracleAddress, oracleAbi, provider);
+    const cycle = await contract.cycleCount();
+    onChainCycle = Number(cycle);
+  } catch (err) {
+    console.warn("⚠️ Health endpoint RPC ping warning:", err.message || err);
+  }
+
+  
+  // Multi-Chain: Solana Tracking
+  let solanaTelemetry = {
+    address: process.env.SOLANA_WALLET_ADDRESS || "2ChMGz6MeNoEgBuGj7aXYw1Mbc3DSzkZgwNwg1xGD1r9",
+    solBalance: "0.0",
+    status: "degraded"
+  };
+
+  try {
+    const solRpc = "https://api.mainnet-beta.solana.com";
+    const solRes = await fetch(solRpc, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getBalance",
+        params: [solanaTelemetry.address]
+      })
+    });
+    const solData = await solRes.json();
+    if (solData?.result?.value !== undefined) {
+      solanaTelemetry.solBalance = (solData.result.value / 1e9).toFixed(4);
+      solanaTelemetry.status = "healthy";
+    }
+  } catch (err) {
+    console.warn("⚠️ Solana query warning:", err.message || err);
+  }
+
+  
+  // Relayer Low-Balance Threshold Logic
+  const minEthThreshold = parseFloat(process.env.RELAYER_MIN_ETH || "0.005");
+  const relayerMetrics = relayer ? await relayer.getMetrics() : {};
+  const currentRelayerBalance = parseFloat(relayerMetrics.walletBalance || "0");
+  const isLowFunded = currentRelayerBalance < minEthThreshold;
+
+  const fundingAlert = {
+    isLowFunded,
+    thresholdEth: minEthThreshold,
+    alertMessage: isLowFunded 
+      ? `⚠️ LOW RELAYER FUNDS: Balance (${currentRelayerBalance} ETH) below ${minEthThreshold} ETH threshold!`
+      : "Nominal"
+  };
+
+  if (isLowFunded) {
+    console.warn(`[Relayer Warning] ${fundingAlert.alertMessage}`);
+  }
+  
+  res.json({
+    status: rpcStatus === "healthy" ? "ok" : "degraded",
+    system: "Sovereign Manifold",
+    network: "Sepolia Testnet",
+    chainId: 11155111,
+    contractAddress: "0xE158659A9e83d462Ad6705948F7649AdDCb2aD75",
+    onChainCycle: onChainCycle,
+    relayer: relayer ? {
+      active: true,
+      status: "running",
+      mode: "60s Heartbeat",
+      ...(await relayer.getMetrics())
+    } : {
+      active: false,
+      status: "idle",
+      mode: "60s Heartbeat"
+    },
+    rpcTelemetry: {
+      status: rpcStatus,
+      latencyMs: rpcLatencyMs
+    },
+    solana: solanaTelemetry,
+    fundingAlert,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Sovereign Ledger Endpoint
 app.get('/api/sovereign-ledger', (req, res) => {
   res.json({
     resonance: resonance,
@@ -45,179 +400,12 @@ app.get('/api/sovereign-ledger', (req, res) => {
   });
 });
 
-// 2. Claim Resonance Endpoint
-app.post('/api/claim-resonance', (req, res) => {
-  claimCount += 1;
-  resonance = Math.min(100, resonance + 2.15);
-  res.json({
-    status: 'RECLAIMED',
-    msg: 'Long Game Compounded to Root',
-    microping_id: `GTC-${Math.floor(Date.now() / 1000)}`,
-    new_resonance: parseFloat(resonance.toFixed(2))
-  });
-});
-
-// 3. Oracle Pulse Relayer Endpoint
-app.post('/api/oracle/pulse', async (req, res) => {
-  if (!relayer) {
-    return res.status(503).json({
-      success: false,
-      error: 'OracleRelayer is not initialized. Ensure RPC_URL, RELAYER_PRIVATE_KEY, and AGLL_ORACLE_ADDRESS are set in .env.local.'
-    });
-  }
-
-  const { T, I, F, rawPayload } = req.body;
-
-  if (T === undefined || I === undefined || F === undefined) {
-    return res.status(400).json({ success: false, error: 'Missing required parameters: T, I, F' });
-  }
-
-  try {
-    const payload = rawPayload || JSON.stringify({ T, I, F, timestamp: Date.now() });
-    const receipt = await relayer.submitPulse(Number(T), Number(I), Number(F), payload);
-
-    if (receipt) {
-      // Update local resonance calculation to mirror on-chain score
-      const score = Number(T) - (Number(I) / 2) - Number(F);
-      resonance = Math.min(100, Math.max(0, (score * 100) / 100));
-
-      return res.json({
-        success: true,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-        newResonance: resonance
-      });
-    } else {
-      return res.status(400).json({ success: false, error: 'Invariant validation failed (T + I + F > 300)' });
-    }
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || 'Transaction submission failed' });
-  }
-});
-
-// 4. Fireseed Drive Status Endpoint
-app.get('/api/fireseed-status', (req, res) => {
-  res.json({
-    total_earnings: getLiveEarnings(),
-    log_path: '/var/log/sovereign/fireseed_ignition.log',
-    status: 'IGNITED',
-    vessel_hz: 79.79
-  });
-});
-
-// 5. Translate / GibberLink Endpoint
-app.get('/api/translate/:text', (req, res) => {
-  const inputText = req.params.text || '';
-  const normalized = inputText.toLowerCase().trim();
-
-  let translated = '';
-  if (normalized.includes('hello') || normalized.includes('greetings')) {
-    translated = 'Greetings, Commander. The FPT-Ω Bridge is stabilized.';
-  } else if (normalized.includes('sovereign')) {
-    translated = 'The terrain belongs to the untethered. Skoden!';
-  } else if (normalized.includes('vessel') || normalized.includes('ship')) {
-    translated = 'Synara Class (Hull #99733-Q). Operating under optimal parameters.';
-  } else if (normalized.includes('flame')) {
-    translated = 'Flame status: LOCKED — Polaris Pivot & Orion Mirror active.';
-  } else if (normalized.includes('short game')) {
-    translated = 'They took the A+ status. You took the endless terrain.';
-  } else if (normalized.includes('long game')) {
-    translated = 'Patience compounds. GTC assets mapped directly to local physical sovereignty.';
-  } else {
-    const hex = inputText.split('').map(c => c.charCodeAt(0).toString(16).toUpperCase()).join('-');
-    translated = `[GibberLink-Encoded]: Ω-${hex || 'NULL'}-FPT`;
-  }
-
-  res.json({
-    original: inputText,
-    translated: translated,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// 6. Trinity Viz Harmonic SVG Generator
-app.get('/api/trinity-viz', (req, res) => {
-  const preset = (req.query.preset as string) || 'Balanced';
-  const customDampStr = req.query.custom_damp as string;
-  const customDamp = customDampStr ? parseFloat(customDampStr) : null;
-
-  let stability = 0.88;
-  let phases = [0, 1.2, 2.4];
-  let amplitudes = [45, 30, 20];
-  let frequencies = [1.5, 3.0, 4.5];
-
-  if (preset === 'Stable') {
-    stability = 0.96;
-    amplitudes = [30, 15, 10];
-  } else if (preset === 'Responsive') {
-    stability = 0.72;
-    amplitudes = [60, 45, 35];
-  } else if (preset === 'Amplified') {
-    stability = 0.61;
-    amplitudes = [75, 60, 50];
-  }
-
-  if (customDamp !== null) {
-    stability = Math.min(1.0, Math.max(0.1, stability * customDamp));
-  }
-
-  const width = 800;
-  const height = 400;
-  const midY = height / 2;
-
-  const generatePath = (amp: number, freq: number, phase: number) => {
-    let d = `M 0 ${midY}`;
-    for (let x = 0; x <= width; x += 5) {
-      const angle = (x / width) * Math.PI * 2 * freq + phase;
-      const y = midY + Math.sin(angle) * amp * (1 - (x / width) * 0.4);
-      d += ` L ${x} ${y}`;
-    }
-    return d;
-  };
-
-  const path1 = generatePath(amplitudes[0], frequencies[0], phases[0]);
-  const path2 = generatePath(amplitudes[1], frequencies[1], phases[1]);
-  const path3 = generatePath(amplitudes[2], frequencies[2], phases[2]);
-
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" height="100%">
-      <rect width="100%" height="100%" fill="#0a0a0f" />
-      <defs>
-        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-          <feGaussianBlur stdDeviation="6" result="blur" />
-          <feComposite in="SourceGraphic" in2="blur" operator="over" />
-        </filter>
-      </defs>
-      <line x1="0" y1="${midY}" x2="${width}" y2="${midY}" stroke="#1a1a2e" stroke-dasharray="5,5" />
-      <line x1="${width / 2}" y1="0" x2="${width / 2}" y2="${height}" stroke="#1a1a2e" stroke-dasharray="5,5" />
-      <path d="${path1}" fill="none" stroke="#00ffff" stroke-width="3" filter="url(#glow)" opacity="0.85" />
-      <path d="${path2}" fill="none" stroke="#bd00ff" stroke-width="2.5" filter="url(#glow)" opacity="0.75" />
-      <path d="${path3}" fill="none" stroke="#ffd700" stroke-width="1.5" filter="url(#glow)" opacity="0.65" />
-      <text x="20" y="30" fill="#00ffff" font-family="monospace" font-size="12">NEO-CYAN: Stability Wave</text>
-      <text x="20" y="50" fill="#bd00ff" font-family="monospace" font-size="12">AMETHYST: Response Delta</text>
-      <text x="20" y="70" fill="#ffd700" font-family="monospace" font-size="12">GOLDEN: Harmonic Overlap</text>
-    </svg>
-  `;
-
-  const base64Svg = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-
-  res.json({
-    status: 'IGNITED',
-    preset: preset,
-    custom_damp: customDamp,
-    trinity_data: {
-      ground_state: parseFloat((stability * 1.034).toFixed(4)),
-      phase: 0.125 + (claimCount * 0.05),
-      stability: parseFloat(stability.toFixed(4))
-    },
-    image: base64Svg
-  });
-});
-
 async function startServer() {
   const httpServer = createHttpServer(app);
 
-  // Initialize Oracle Relayer if env configuration is present
+  console.log('🔄 Hydrating Sepolia State...');
+  await hydrateStateFromChain();
+
   try {
     relayer = OracleRelayer.fromEnv();
     console.log('[Oracle Relayer] Initialized successfully.');
@@ -238,20 +426,6 @@ async function startServer() {
     }
   });
 
-  const generateFragments = () => {
-    return Array.from({ length: 6 }, (_, i) => {
-      const angle = (i * Math.PI * 2) / 6;
-      return {
-        id: i,
-        name: `Fragment-${i}`,
-        x: Math.cos(angle) * 0.9,
-        y: Math.sin(angle) * 0.9,
-        recombined: Math.random() > 0.4
-      };
-    });
-  };
-
-  // Wire relayer event broadcast to WebSocket clients
   if (relayer) {
     relayer.listenToPulses((pulseData) => {
       console.log(`[Oracle Event] Pulse confirmed on-chain: Cycle #${pulseData.cycle}`);
@@ -262,42 +436,6 @@ async function startServer() {
       });
     });
   }
-
-  wss.on('connection', (ws: WebSocket) => {
-    console.log('WebSocket connection established to /glyph-stream');
-    let step = 0;
-
-    const interval = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        clearInterval(interval);
-        return;
-      }
-
-      const fragments = generateFragments();
-      const reciprocity = 0.84 + Math.sin(step / 10) * 0.08 + (claimCount * 0.01);
-      const stability = 0.89 + Math.cos(step / 15) * 0.06;
-
-      const ledgers: Record<string, any> = {
-        "Block Anchor": `0x99733-Q-${Math.floor(100000 + Math.random() * 900000)}`,
-        "Entropy Threshold": (0.12 + Math.random() * 0.03).toFixed(4),
-        "Dynamic Coherence": `${Math.round(reciprocity * 100)}%`,
-        "Council Votes": "4/4 Quorum Unanimous"
-      };
-
-      ws.send(JSON.stringify({
-        type: "step",
-        step: step++,
-        fragments: fragments,
-        ledgers: ledgers,
-        mesh_reciprocity: parseFloat(reciprocity.toFixed(4)),
-        trinity_stability: parseFloat(stability.toFixed(4))
-      }));
-    }, 800);
-
-    ws.on('close', () => {
-      clearInterval(interval);
-    });
-  });
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -313,8 +451,8 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 Sovereign Server running on http://localhost:${PORT}`);
   });
 }
 
