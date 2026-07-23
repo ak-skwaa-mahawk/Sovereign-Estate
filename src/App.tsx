@@ -864,9 +864,9 @@ export default function App() {
 
       return {
         block: `B${b}`,
-        "Waterproofing Membrane": wDrift,
-        "Insulation Board": iDrift,
-        "Sealant Cartridges": sDrift,
+        "Merkle Proof Verification": wDrift,
+        "IPFS Content Addressing": iDrift,
+        "Sepolia Transaction Details": sDrift,
       };
     });
   }, [telemetry]);
@@ -3571,9 +3571,9 @@ export default function App() {
                       iconType="rect"
                       iconSize={8}
                     />
-                    <Bar dataKey="Waterproofing Membrane" stackId="drift" fill="#10b981" />
-                    <Bar dataKey="Insulation Board" stackId="drift" fill="#f59e0b" />
-                    <Bar dataKey="Sealant Cartridges" stackId="drift" fill="#3b82f6" />
+                    <Bar dataKey="Merkle Proof Verification" stackId="drift" fill="#10b981" />
+                    <Bar dataKey="IPFS Content Addressing" stackId="drift" fill="#f59e0b" />
+                    <Bar dataKey="Sepolia Transaction Details" stackId="drift" fill="#3b82f6" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
