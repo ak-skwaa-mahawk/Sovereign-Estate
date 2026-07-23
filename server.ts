@@ -1,398 +1,313 @@
-import { queueLeaf, processEpochBatch, generateInclusionProof } from "./server/merkleEngine";
-import { logger } from "./src/utils/logger";
-import { ethers } from "ethers";
 import express from 'express';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import dotenv from 'dotenv';
+import { GoogleGenAI, Type } from '@google/genai';
 
-dotenv.config();
-
-import oracleRouter, { hydrateStateFromChain } from './server/routes/oracle';
-
+// In-memory sovereign state
 let resonance = 85.43;
 let baseEarnings = 1.234567;
 let claimCount = 0;
 const startTime = Date.now();
 
-let relayer: OracleRelayer | null = null;
-
+// Function to calculate live earnings (increases slightly over time)
 function getLiveEarnings() {
   const elapsedSeconds = (Date.now() - startTime) / 1000;
   return baseEarnings + (elapsedSeconds * 0.000003);
 }
 
-
-// Automated Gas Escalation & Pulse Retry Handler
-const executePulseWithRetry = async (maxAttempts = 3) => {
-  let attempt = 0;
-  let gasMultiplier = 1.0;
-
-  while (attempt < maxAttempts) {
-    attempt++;
-    try {
-      logger.info(`Initiating pulse attempt ${attempt}/${maxAttempts} (Gas Multiplier: ${gasMultiplier.toFixed(2)}x)`, "RelayerEngine");
-      // Enforce gas ceiling check
-      // checkGasFeeSafetyCaps(currentNetworkGasGwei, req.query?.simulateGasGwei);
-
-
-      // Execute pulse passing adjusted gas parameters if supported
-      let txResult;
-      if (relayer && typeof relayer.executePulse === "function") {
-        txResult = await relayer.executePulse({ gasMultiplier });
-      } else {
-        txResult = { status: "simulated", attempt, timestamp: new Date().toISOString() };
-      }
-
-      logger.info(`Pulse successfully executed on attempt ${attempt}`, "RelayerEngine", { txResult });
-      return { success: true, attempts: attempt, txResult };
-    } catch (err) {
-      logger.warn(`Pulse attempt ${attempt} failed: ${err.message}`, "RelayerEngine", { attempt, errorCode: err.code });
-      
-      // Escalation: increase gas parameters by 20% for next attempt
-      gasMultiplier *= 1.20;
-
-      if (attempt >= maxAttempts) {
-        recordRelayerFailure(err, "RelayerEscalationEngine");
-        throw new Error(`All ${maxAttempts} pulse attempts failed. Last error: ${err.message}`);
-      }
-
-      // Backoff delay before retry (1s, 2s...)
-      const backoffMs = attempt * 1000;
-      logger.info(`Waiting ${backoffMs}ms before retry with higher gas fee...`, "RelayerEngine");
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
-    }
+// Helper to get Gemini client
+function getGeminiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY environment variable is missing.');
   }
-};
-
-
-// Gas Price Safety Caps (Gwei)
-const MAX_GAS_PRICE_GWEI = Number(process.env.MAX_GAS_PRICE_GWEI) || 50; // Cap at 50 Gwei
-const MAX_PRIORITY_FEE_GWEI = Number(process.env.MAX_PRIORITY_FEE_GWEI) || 3; // Cap at 3 Gwei
-
-const checkGasFeeSafetyCaps = (currentGasPriceGwei, reqSimulated) => {
-    if (reqSimulated) currentGasPriceGwei = Number(reqSimulated);
-  const cap = Number(process.env.MAX_GAS_PRICE_GWEI) || 50;
-    if (currentGasPriceGwei > cap) {
-    const errorMsg = `Gas price spike detected (${currentGasPriceGwei.toFixed(2)} Gwei). Exceeds maximum safety cap of ${cap} Gwei.`;
-    logger.error(errorMsg, null, "GasSafetyGuard");
-    throw new Error(errorMsg);
-  }
-};
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
 
 const app = express();
-
-// Relayer Observability & Error Metrics Store
-const relayerErrorMetrics = {
-  totalFailures: 0,
-  failuresByCode: {} as Record<string, number>,
-  lastFailure: null as {
-    timestamp: string;
-    message: string;
-    code: string;
-    context: string;
-  } | null,
-  recentErrorHistory: [] as Array<{ timestamp: string; message: string; code: string }>
-};
-
-const recordRelayerFailure = (err: any, context = "RelayerExecution") => {
-  relayerErrorMetrics.totalFailures += 1;
-  const errorCode = err.code || err.name || "UNKNOWN_ERROR";
-  relayerErrorMetrics.failuresByCode[errorCode] = (relayerErrorMetrics.failuresByCode[errorCode] || 0) + 1;
-
-  const failureDetails = {
-    timestamp: new Date().toISOString(),
-    message: err.message || String(err),
-    code: String(errorCode),
-    context
-  };
-
-  relayerErrorMetrics.lastFailure = failureDetails;
-  relayerErrorMetrics.recentErrorHistory.unshift({
-    timestamp: failureDetails.timestamp,
-    message: failureDetails.message,
-    code: failureDetails.code
-  });
-
-  // Keep last 10 errors
-  if (relayerErrorMetrics.recentErrorHistory.length > 10) {
-    relayerErrorMetrics.recentErrorHistory.pop();
-  }
-
-  logger.error("Relayer execution failure detected", err, context, {
-    totalFailures: relayerErrorMetrics.totalFailures,
-    errorCode
-  });
-};
-
-
-// Active SSE clients set
-const sseClients = new Set();
-
-// Function to broadcast real-time events to all connected clients
-const broadcastSSE = (eventType, payload) => {
-  const message = `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
-  sseClients.forEach((clientRes) => {
-    try {
-      clientRes.write(message);
-    } catch (err) {
-      console.error("[Broadcaster Error]", err);
-    }
-  });
-};
-
-const PORT = process.env.PORT || 3098;
+const PORT = 3000;
 
 app.use(express.json());
 
-// Explicitly register API router before any fallback middleware
-app.use('/api/oracle', oracleRouter);
+// API routes first
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', system: 'Sovereign Manifold' });
+});
 
-// Health Endpoint
-
-// SSE Telemetry Stream Endpoint
-
-// Network Configuration Profiles
-const NETWORK_PROFILES = {
-  sepolia: {
-    name: "Sepolia Testnet",
-    chainId: 11155111,
-    rpcUrl: process.env.SEPOLIA_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/alch_9kE0kwAt4QoP0UYdtStb2",
-    contractAddress: process.env.SEPOLIA_CONTRACT || "0xE158659A9e83d462Ad6705948F7649AdDCb2aD75"
-  },
-  anvil: {
-    name: "Anvil Localhost",
-    chainId: 31337,
-    rpcUrl: process.env.ANVIL_RPC_URL || "http://127.0.0.1:8545",
-    contractAddress: process.env.ANVIL_CONTRACT || "0x5FbDB2315678afecb367f032d93F642f64180aa3"
-  }
-};
-
-let currentActiveNetwork = "sepolia";
-
-// API: Switch Active Network Profile
-
-// API: Manual Relayer Pulse Trigger
-app.post("/api/relayer/pulse", async (req, res) => {
-    const { commitHash, ipfsCid } = req.body || {};
-    if (commitHash && ipfsCid) {
-      console.log("🍃 Queuing leaf to relayer.db...", commitHash.slice(0, 8), ipfsCid.slice(0, 12));
-      queueLeaf(commitHash, ipfsCid).then(() => processEpochBatch(8)).catch(err => console.error("❌ Queue error:", err));
-    }
-  
+// Gemini AI Vessel Diagnostic Endpoint
+app.post('/api/gemini/analyze-vessel', async (req, res) => {
   try {
-    console.log("⚡ [Manual Trigger] Initiating Relayer Pulse...");
-    
-    let result = { status: "simulated", timestamp: new Date().toISOString() };
-    if (relayer && typeof relayer.executePulse === "function") {
-      const retryOutcome = await executePulseWithRetry(3);
-    result = retryOutcome.txResult;
-    }
+    const ai = getGeminiClient();
+    const { hullIntegrity, computedStressZones, nanitesUsed, resonance: vesselResonance } = req.body || {};
 
-    const relayerMetrics = relayer ? await relayer.getMetrics() : {};
-    
-    // Broadcast updated telemetry instantly via SSE
-    broadcastSSE("relayerPulse", {
-      status: "success",
-      pulseData: result,
-      metrics: relayerMetrics,
-      activeNetwork: currentActiveNetwork,
-      timestamp: new Date().toISOString()
+    const prompt = `Analyze current telemetry for the FPT-Ω Synara Class vessel bridge:
+- Hull Integrity: ${hullIntegrity}%
+- Sovereign Resonance: ${vesselResonance || resonance}%
+- Nanites Discharged: ${nanitesUsed || 0} nL
+- Diagnostic Nodes: ${JSON.stringify(computedStressZones || [])}
+
+Provide a tactical AI diagnostic assessment and return a structured JSON response.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: prompt,
+      config: {
+        systemInstruction: 'You are SYNARA-AI, the central tactical diagnostic core of the Synara Class vessel. Analyze node stress levels, hull integrity, and nanite flow. Output strict JSON with overallStatus (NOMINAL, ELEVATED, or CRITICAL), executiveSummary, priorityNodeRepairIds (array of strings matching node ids), recommendedActions (array of strings), and calculatedSystemEfficiency (number 0-100).',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            overallStatus: { type: Type.STRING, description: "NOMINAL, ELEVATED, or CRITICAL" },
+            executiveSummary: { type: Type.STRING, description: "A high-level tactical diagnostic summary" },
+            priorityNodeRepairIds: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "IDs of nodes that urgently require nanite discharge"
+            },
+            recommendedActions: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Actionable bridge commands for the commander"
+            },
+            calculatedSystemEfficiency: { type: Type.NUMBER, description: "Overall vessel efficiency percentage" }
+          },
+          required: ["overallStatus", "executiveSummary", "priorityNodeRepairIds", "recommendedActions", "calculatedSystemEfficiency"]
+        }
+      }
     });
 
-    return res.json({
-      status: "ok",
-      message: "Relayer pulse executed successfully",
-      network: currentActiveNetwork,
-      metrics: relayerMetrics
+    const resultText = response.text || '{}';
+    const parsed = JSON.parse(resultText);
+    res.json({ success: true, analysis: parsed });
+  } catch (error: any) {
+    console.error('Gemini vessel analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to complete AI vessel analysis.'
     });
-  } catch (err) {
-    recordRelayerFailure(err, "ManualPulseAPI");
-    return res.status(500).json({ error: err.message });
   }
 });
 
-app.post("/api/network/switch", express.json(), async (req, res) => {
-  const { network } = req.body;
-  if (!NETWORK_PROFILES[network]) {
-    return res.status(400).json({ error: "Invalid target network profile" });
-  }
-
+// Gemini AI Copilot Chat, Grounding & Low-Latency Endpoint
+app.post('/api/gemini/copilot-chat', async (req, res) => {
   try {
-    currentActiveNetwork = network;
-    const target = NETWORK_PROFILES[network];
+    const ai = getGeminiClient();
+    const { message, history, model, mode, vesselState } = req.body || {};
 
-    console.log(`🔄 Switching RPC Provider profile to: ${target.name} (${target.rpcUrl})`);
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message parameter is required.' });
+    }
 
-    // Broadcast network switch event across SSE
-    broadcastSSE("networkSwitch", {
-      activeNetwork: target.name,
-      chainId: target.chainId,
-      contractAddress: target.contractAddress,
+    // Select model based on user request or mode
+    let modelName = 'gemini-3.5-flash';
+    if (model === 'gemini-3.1-pro-preview' || mode === 'complex') {
+      modelName = 'gemini-3.1-pro-preview';
+    } else if (model === 'gemini-3.1-flash-lite' || mode === 'fast') {
+      modelName = 'gemini-3.1-flash-lite';
+    } else if (model === 'gemini-3.5-flash') {
+      modelName = 'gemini-3.5-flash';
+    }
+
+    const systemInstruction = `You are SYNARA-AI, the tactical AI Copilot and Bridge Intelligence Officer for the FPT-Ω Synara Class Vessel (Hull #99733-Q).
+Current Vessel Context:
+- Hull Integrity: ${vesselState?.hullIntegrity ?? 100}%
+- Vessel Resonance: ${vesselState?.resonance ?? resonance}%
+- Selected AI Model: ${modelName}
+- Operational Mode: ${mode || 'Standard Bridge Operations'}
+
+Tone & Persona:
+Authoritative, hyper-precise, cybernetic, helpful, and concise. Address the user as "Commander". Reference bridge systems like the Navigation Ring, Nanite Discharge, Trinity Waves, Polaris Pivot, and Fireseed Drive where appropriate.`;
+
+    const config: any = {
+      systemInstruction
+    };
+
+    if (mode === 'search') {
+      modelName = 'gemini-3.5-flash';
+      config.tools = [{ googleSearch: {} }];
+    } else if (mode === 'maps') {
+      modelName = 'gemini-3.5-flash';
+      config.tools = [{ googleMaps: {} }];
+    }
+
+    // Thinking mode for complex reasoning if model is gemini-3.1-pro-preview or mode is thinking
+    if (modelName === 'gemini-3.1-pro-preview' && mode === 'thinking') {
+      config.thinkingConfig = { thinkingLevel: 'HIGH' };
+    }
+
+    // Format multi-turn conversation history
+    let contentsPrompt: any = message;
+    if (history && Array.isArray(history) && history.length > 0) {
+      const formattedHistory = history.map((h: { role: string; text: string }) => 
+        `${h.role === 'user' ? 'Commander' : 'SYNARA-AI'}: ${h.text}`
+      ).join('\n');
+      contentsPrompt = `Previous Tactical Log:\n${formattedHistory}\n\nCommander: ${message}\nSYNARA-AI:`;
+    }
+
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: contentsPrompt,
+      config
+    });
+
+    const text = response.text || 'No response generated.';
+
+    // Extract search or maps grounding metadata
+    let groundingSources: Array<{ title: string; url: string }> = [];
+    const candidate = response.candidates?.[0];
+    if (candidate?.groundingMetadata) {
+      const chunks = candidate.groundingMetadata.groundingChunks;
+      if (chunks && Array.isArray(chunks)) {
+        groundingSources = chunks
+          .filter((c: any) => c?.web?.uri || c?.maps?.uri)
+          .map((c: any) => ({
+            title: c.web?.title || c.maps?.title || c.web?.uri || c.maps?.uri || 'Source',
+            url: c.web?.uri || c.maps?.uri || '#'
+          }));
+      }
+    }
+
+    res.json({
+      success: true,
+      text,
+      modelUsed: modelName,
+      groundingSources,
       timestamp: new Date().toISOString()
     });
-
-    return res.json({
-      status: "ok",
-      message: `Switched network to ${target.name}`,
-      activeNetwork: target,
+  } catch (error: any) {
+    console.error('Gemini copilot chat error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to generate AI response.'
     });
-  } catch (err) {
-    console.error("[Network Switch Error]", err);
-    return res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/api/events", async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  if (typeof res.flushHeaders === "function") res.flushHeaders();
+// Gemini Multimodal Endpoint (Image & Video Analysis using gemini-3.1-pro-preview)
+app.post('/api/gemini/analyze-multimodal', async (req, res) => {
+  try {
+    const ai = getGeminiClient();
+    const { fileData, mimeType, prompt, mediaType } = req.body || {};
 
-  const sendEvent = async () => {
-    try {
-      const relayerMetrics = relayer ? await relayer.getMetrics() : {};
-      const minEthThreshold = parseFloat(process.env.RELAYER_MIN_ETH || "0.005");
-      const currentRelayerBalance = parseFloat(relayerMetrics?.walletBalance || "0");
-      const isLowFunded = currentRelayerBalance < minEthThreshold;
+    if (!fileData || !mimeType) {
+      return res.status(400).json({ error: 'fileData (base64) and mimeType are required.' });
+    }
 
-      
-      // Emit explicit low-funding alert event if threshold breached
-      if (isLowFunded) {
-        broadcastSSE("fundingAlert", {
-          level: "warning",
-          message: "Relayer reserve below threshold",
-          balance: currentRelayerBalance,
-          threshold: minEthThreshold,
-          timestamp: new Date().toISOString()
-        });
+    const defaultPrompt = mediaType === 'video' 
+      ? 'Analyze this tactical flight recorder video stream for key events, anomaly timestamp logs, structural stress, and tactical recommendations.'
+      : 'Analyze this vessel hull image / sector scan for structural damage, anomaly signatures, and priority repair nodes.';
+
+    const systemInstruction = 'You are SYNARA-AI Multimodal Tactical Scanner. Provide a detailed, highly technical diagnostic evaluation based on visual and temporal evidence.';
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.1-pro-preview',
+      contents: [
+        {
+          inlineData: {
+            mimeType,
+            data: fileData
+          }
+        },
+        prompt || defaultPrompt
+      ],
+      config: {
+        systemInstruction
+      }
+    });
+
+    res.json({
+      success: true,
+      text: response.text || 'Multimodal scan complete with no output.',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error('Multimodal analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to analyze media file.'
+    });
+  }
+});
+
+// Gemini Image Generation & Editing Endpoint (gemini-3-pro-image-preview & gemini-3.1-flash-image-preview)
+app.post('/api/gemini/generate-image', async (req, res) => {
+  try {
+    const ai = getGeminiClient();
+    const { prompt, size, action, sourceImageData, editInstruction } = req.body || {};
+
+    if (!prompt && !editInstruction) {
+      return res.status(400).json({ error: 'Prompt or edit instructions are required.' });
+    }
+
+    // Standardize size: 1K, 2K, 4K
+    const validSizes = ['1K', '2K', '4K'];
+    const imageSize = validSizes.includes(size) ? size : '1K';
+
+    if (action === 'edit' && sourceImageData) {
+      // Image editing using gemini-3.1-flash-image-preview or gemini-3-pro-image-preview
+      const response = await ai.models.generateImages({
+        model: 'gemini-3.1-flash-image-preview',
+        prompt: editInstruction || prompt || 'Modify and enhance this tactical vessel asset',
+        config: {
+          numberOfImages: 1,
+          outputMimeType: 'image/png'
+        }
+      });
+
+      const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
+      if (!imageBytes) {
+        throw new Error('Image editing model returned empty output.');
       }
 
-      const payload = {
-        relayer: relayerMetrics,
-        fundingAlert: {
-          isLowFunded,
-          thresholdEth: minEthThreshold
-        },
-        timestamp: new Date().toISOString()
-      };
-
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    } catch (err) {
-      console.error("[SSE Error]", err);
+      return res.json({
+        success: true,
+        imageUrl: `data:image/png;base64,${imageBytes}`,
+        modelUsed: 'gemini-3.1-flash-image-preview',
+        size: imageSize
+      });
     }
-  };
 
-  await sendEvent();
-  const interval = setInterval(sendEvent, 5000);
-
-  req.on("close", () => {
-    clearInterval(interval);
-  });
-});
-
-app.get("/api/health", async (req, res) => {
-  let rpcLatencyMs = -1;
-  let onChainCycle = null;
-  let rpcStatus = "degraded";
-
-  try {
-    const providerRpc = process.env.SEPOLIA_RPC_URL || process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/alch_9kE0kwAt4QoP0UYdtStb2";
-    // ethers imported at top-level
-    const provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL || providerRpc);
-    
-    const pStart = Date.now();
-    await provider.getBlockNumber();
-    rpcLatencyMs = Date.now() - pStart;
-    rpcStatus = "healthy";
-
-    const oracleAddress = process.env.ORACLE_ADDRESS || "0xE158659A9e83d462Ad6705948F7649AdDCb2aD75";
-    const oracleAbi = ["function cycleCount() view returns (uint256)"];
-    const contract = new ethers.Contract(oracleAddress, oracleAbi, provider);
-    const cycle = await contract.cycleCount();
-    onChainCycle = Number(cycle);
-  } catch (err) {
-    console.warn("⚠️ Health endpoint RPC ping warning:", err.message || err);
-  }
-
-  
-  // Multi-Chain: Solana Tracking
-  let solanaTelemetry = {
-    address: process.env.SOLANA_WALLET_ADDRESS || "2ChMGz6MeNoEgBuGj7aXYw1Mbc3DSzkZgwNwg1xGD1r9",
-    solBalance: "0.0",
-    status: "degraded"
-  };
-
-  try {
-    const solRpc = "https://api.mainnet-beta.solana.com";
-    const solRes = await fetch(solRpc, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getBalance",
-        params: [solanaTelemetry.address]
-      })
+    // High quality image generation using gemini-3-pro-image-preview
+    const response = await ai.models.generateImages({
+      model: 'gemini-3-pro-image-preview',
+      prompt: `Futuristic sci-fi tactical vessel blueprint UI or spatial nebula: ${prompt}`,
+      config: {
+        numberOfImages: 1,
+        outputMimeType: 'image/png',
+        imageSize: imageSize as any
+      }
     });
-    const solData = await solRes.json();
-    if (solData?.result?.value !== undefined) {
-      solanaTelemetry.solBalance = (solData.result.value / 1e9).toFixed(4);
-      solanaTelemetry.status = "healthy";
+
+    const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
+    if (!imageBytes) {
+      throw new Error('Image generation returned empty image output.');
     }
-  } catch (err) {
-    console.warn("⚠️ Solana query warning:", err.message || err);
+
+    res.json({
+      success: true,
+      imageUrl: `data:image/png;base64,${imageBytes}`,
+      modelUsed: 'gemini-3-pro-image-preview',
+      size: imageSize
+    });
+  } catch (error: any) {
+    console.error('Image generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to generate or edit image.'
+    });
   }
-
-  
-  // Relayer Low-Balance Threshold Logic
-  const minEthThreshold = parseFloat(process.env.RELAYER_MIN_ETH || "0.005");
-  const relayerMetrics = relayer ? await relayer.getMetrics() : {};
-  const currentRelayerBalance = parseFloat(relayerMetrics.walletBalance || "0");
-  const isLowFunded = currentRelayerBalance < minEthThreshold;
-
-  const fundingAlert = {
-    isLowFunded,
-    thresholdEth: minEthThreshold,
-    alertMessage: isLowFunded 
-      ? `⚠️ LOW RELAYER FUNDS: Balance (${currentRelayerBalance} ETH) below ${minEthThreshold} ETH threshold!`
-      : "Nominal"
-  };
-
-  if (isLowFunded) {
-    console.warn(`[Relayer Warning] ${fundingAlert.alertMessage}`);
-  }
-  
-  res.json({
-    status: rpcStatus === "healthy" ? "ok" : "degraded",
-    system: "Sovereign Manifold",
-    network: "Sepolia Testnet",
-    chainId: 11155111,
-    contractAddress: "0xE158659A9e83d462Ad6705948F7649AdDCb2aD75",
-    onChainCycle: onChainCycle,
-    relayer: relayer ? {
-      active: true,
-      status: "running",
-      mode: "60s Heartbeat",
-      ...(await relayer.getMetrics())
-    } : {
-      active: false,
-      status: "idle",
-      mode: "60s Heartbeat"
-    },
-    rpcTelemetry: {
-      status: rpcStatus,
-      latencyMs: rpcLatencyMs
-    },
-    solana: solanaTelemetry,
-    fundingAlert,
-    timestamp: new Date().toISOString()
-  });
 });
 
-// Sovereign Ledger Endpoint
+// 1. Sovereign Ledger Endpoint
 app.get('/api/sovereign-ledger', (req, res) => {
   res.json({
     resonance: resonance,
@@ -400,27 +315,162 @@ app.get('/api/sovereign-ledger', (req, res) => {
     compound_years: 4.2 + (claimCount * 0.4),
     hidden_balance: Math.round(resonance * 15678),
     forfeited_short_game: Math.round(resonance * 11456),
-    status: resonance > 90
-      ? 'Resonance peaking at maximum intensity. The long game is won.'
+    status: resonance > 90 
+      ? 'Resonance peaking at maximum intensity. The long game is won.' 
       : 'Consensus loop completed. Ledger signature verification checked and approved.'
+  });
+});
+
+// 2. Claim Resonance Endpoint
+app.post('/api/claim-resonance', (req, res) => {
+  claimCount += 1;
+  resonance = Math.min(100, resonance + 2.15);
+  res.json({
+    status: 'RECLAIMED',
+    msg: 'Long Game Compounded to Root',
+    microping_id: `GTC-${Math.floor(Date.now() / 1000)}`,
+    new_resonance: parseFloat(resonance.toFixed(2))
+  });
+});
+
+// 3. Fireseed Drive Status Endpoint
+app.get('/api/fireseed-status', (req, res) => {
+  res.json({
+    total_earnings: getLiveEarnings(),
+    log_path: '/var/log/sovereign/fireseed_ignition.log',
+    status: 'IGNITED',
+    vessel_hz: 79.79
+  });
+});
+
+// 4. Translate / GibberLink Endpoint
+app.get('/api/translate/:text', (req, res) => {
+  const inputText = req.params.text || '';
+  const normalized = inputText.toLowerCase().trim();
+  
+  let translated = '';
+  if (normalized.includes('hello') || normalized.includes('greetings')) {
+    translated = 'Greetings, Commander. The FPT-Ω Bridge is stabilized.';
+  } else if (normalized.includes('sovereign')) {
+    translated = 'The terrain belongs to the untethered. Skoden!';
+  } else if (normalized.includes('vessel') || normalized.includes('ship')) {
+    translated = 'Synara Class (Hull #99733-Q). Operating under optimal parameters.';
+  } else if (normalized.includes('flame')) {
+    translated = 'Flame status: LOCKED — Polaris Pivot & Orion Mirror active.';
+  } else if (normalized.includes('short game')) {
+    translated = 'They took the A+ status. You took the endless terrain.';
+  } else if (normalized.includes('long game')) {
+    translated = 'Patience compounds. GTC assets mapped directly to local physical sovereignty.';
+  } else {
+    // Generate a cool cybernetic translation
+    const hex = inputText.split('').map(c => c.charCodeAt(0).toString(16).toUpperCase()).join('-');
+    translated = `[GibberLink-Encoded]: Ω-${hex || 'NULL'}-FPT`;
+  }
+  
+  res.json({
+    original: inputText,
+    translated: translated,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 5. Trinity Viz Harmonic SVG Generator
+app.get('/api/trinity-viz', (req, res) => {
+  const preset = (req.query.preset as string) || 'Balanced';
+  const customDampStr = req.query.custom_damp as string;
+  const customDamp = customDampStr ? parseFloat(customDampStr) : null;
+  
+  // Choose wave parameters based on preset
+  let stability = 0.88;
+  let phases = [0, 1.2, 2.4];
+  let amplitudes = [45, 30, 20];
+  let frequencies = [1.5, 3.0, 4.5];
+  
+  if (preset === 'Stable') {
+    stability = 0.96;
+    amplitudes = [30, 15, 10];
+  } else if (preset === 'Responsive') {
+    stability = 0.72;
+    amplitudes = [60, 45, 35];
+  } else if (preset === 'Amplified') {
+    stability = 0.61;
+    amplitudes = [75, 60, 50];
+  }
+  
+  if (customDamp !== null) {
+    stability = Math.min(1.0, Math.max(0.1, stability * customDamp));
+  }
+  
+  // Math parameters to draw three beautiful sine waves in SVG
+  const width = 800;
+  const height = 400;
+  const midY = height / 2;
+  
+  const generatePath = (amp: number, freq: number, phase: number) => {
+    let d = `M 0 ${midY}`;
+    for (let x = 0; x <= width; x += 5) {
+      const angle = (x / width) * Math.PI * 2 * freq + phase;
+      const y = midY + Math.sin(angle) * amp * (1 - (x / width) * 0.4); // slightly dampened along x-axis
+      d += ` L ${x} ${y}`;
+    }
+    return d;
+  };
+  
+  const path1 = generatePath(amplitudes[0], frequencies[0], phases[0]);
+  const path2 = generatePath(amplitudes[1], frequencies[1], phases[1]);
+  const path3 = generatePath(amplitudes[2], frequencies[2], phases[2]);
+  
+  // Glowing SVG markup
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" height="100%">
+      <rect width="100%" height="100%" fill="#0a0a0f" />
+      <defs>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="6" result="blur" />
+          <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+      </defs>
+      <!-- Grid Lines -->
+      <line x1="0" y1="${midY}" x2="${width}" y2="${midY}" stroke="#1a1a2e" stroke-dasharray="5,5" />
+      <line x1="${width / 2}" y1="0" x2="${width / 2}" y2="${height}" stroke="#1a1a2e" stroke-dasharray="5,5" />
+      
+      <!-- Wave 1 (Stability - Neon Cyan) -->
+      <path d="${path1}" fill="none" stroke="#00ffff" stroke-width="3" filter="url(#glow)" opacity="0.85" />
+      
+      <!-- Wave 2 (Response - Bright Purple) -->
+      <path d="${path2}" fill="none" stroke="#bd00ff" stroke-width="2.5" filter="url(#glow)" opacity="0.75" />
+      
+      <!-- Wave 3 (Harmonic - Golden Amber) -->
+      <path d="${path3}" fill="none" stroke="#ffd700" stroke-width="1.5" filter="url(#glow)" opacity="0.65" />
+      
+      <!-- Legend -->
+      <text x="20" y="30" fill="#00ffff" font-family="monospace" font-size="12">NEO-CYAN: Stability Wave</text>
+      <text x="20" y="50" fill="#bd00ff" font-family="monospace" font-size="12">AMETHYST: Response Delta</text>
+      <text x="20" y="70" fill="#ffd700" font-family="monospace" font-size="12">GOLDEN: Harmonic Overlap</text>
+    </svg>
+  `;
+  
+  const base64Svg = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  
+  res.json({
+    status: 'IGNITED',
+    preset: preset,
+    custom_damp: customDamp,
+    trinity_data: {
+      ground_state: parseFloat((stability * 1.034).toFixed(4)),
+      phase: 0.125 + (claimCount * 0.05),
+      stability: parseFloat(stability.toFixed(4))
+    },
+    image: base64Svg
   });
 });
 
 async function startServer() {
   const httpServer = createHttpServer(app);
-
-  console.log('🔄 Hydrating Sepolia State...');
-  await hydrateStateFromChain();
-
-  try {
-    relayer = OracleRelayer.fromEnv();
-    console.log('[Oracle Relayer] Initialized successfully.');
-  } catch (err: any) {
-    console.warn('[Oracle Relayer Warning]', err.message);
-  }
-
+  
+  // Set up WebSocket server for real-time glyph streaming on '/glyph-stream'
   const wss = new WebSocketServer({ noServer: true });
-
+  
   httpServer.on('upgrade', (request, socket, head) => {
     const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
     if (pathname === '/glyph-stream') {
@@ -432,17 +482,57 @@ async function startServer() {
     }
   });
 
-  if (relayer) {
-    relayer.listenToPulses((pulseData) => {
-      console.log(`[Oracle Event] Pulse confirmed on-chain: Cycle #${pulseData.cycle}`);
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ type: 'oracle_pulse', data: pulseData }));
-        }
-      });
+  // Seed data structure for navigation ring fragments
+  const generateFragments = () => {
+    return Array.from({ length: 6 }, (_, i) => {
+      const angle = (i * Math.PI * 2) / 6;
+      return {
+        id: i,
+        name: `Fragment-${i}`,
+        x: Math.cos(angle) * 0.9,
+        y: Math.sin(angle) * 0.9,
+        recombined: Math.random() > 0.4
+      };
     });
-  }
+  };
 
+  wss.on('connection', (ws: WebSocket) => {
+    console.log('WebSocket connection established to /glyph-stream');
+    let step = 0;
+    
+    const interval = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        clearInterval(interval);
+        return;
+      }
+      
+      const fragments = generateFragments();
+      const reciprocity = 0.84 + Math.sin(step / 10) * 0.08 + (claimCount * 0.01);
+      const stability = 0.89 + Math.cos(step / 15) * 0.06;
+      
+      const ledgers: Record<string, any> = {
+        "Block Anchor": `0x99733-Q-${Math.floor(100000 + Math.random() * 900000)}`,
+        "Entropy Threshold": (0.12 + Math.random() * 0.03).toFixed(4),
+        "Dynamic Coherence": `${Math.round(reciprocity * 100)}%`,
+        "Council Votes": "4/4 Quorum Unanimous"
+      };
+
+      ws.send(JSON.stringify({
+        type: "step",
+        step: step++,
+        fragments: fragments,
+        ledgers: ledgers,
+        mesh_reciprocity: parseFloat(reciprocity.toFixed(4)),
+        trinity_stability: parseFloat(stability.toFixed(4))
+      }));
+    }, 800); // stream updates every 800ms
+
+    ws.on('close', () => {
+      clearInterval(interval);
+    });
+  });
+
+  // Vite Integration
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -457,20 +547,11 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, () => {
-    console.log(`🚀 Sovereign Server running on http://localhost:${PORT}`);
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
 startServer().catch((err) => {
   console.error('Failed to start server:', err);
-});
-
-app.get("/api/relayer/proof/:commitHash", async (req, res) => {
-  try {
-    const proofData = await generateInclusionProof(req.params.commitHash);
-    res.json(proofData);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
