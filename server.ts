@@ -43,6 +43,46 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', system: 'Sovereign Manifold' });
 });
 
+// Dynamic Load Rebalancing Endpoint
+app.post('/api/rebalance', (req, res) => {
+  const { action, vessel, targets } = req.body || {};
+  
+  const reduceNodes = targets?.reduce || [];
+  const offloadNodes = targets?.offloadTo || [];
+
+  console.log(`[REBALANCE] Action: ${action} on ${vessel}`);
+
+  const rebalancedNodes = [
+    ...reduceNodes.map((item: any) => ({
+      node: item.node,
+      previousStress: item.current,
+      targetStress: item.target || 55.0,
+      adjustedStress: item.target || 55.0,
+      status: 'LOAD_REDUCED'
+    })),
+    ...offloadNodes.map((item: any) => ({
+      node: item.node,
+      previousStress: item.current,
+      adjustedStress: parseFloat(((item.current || 38.0) + 14.5).toFixed(1)),
+      status: 'LOAD_OFFLOADED'
+    }))
+  ];
+
+  res.json({
+    success: true,
+    action: action || 'REBALANCE_DIAGNOSTIC_NODES',
+    vessel: vessel || 'Synara FPT-Ω',
+    status: 'REBALANCED',
+    rebalancedNodes,
+    delta: {
+      totalRelievedStress: reduceNodes.reduce((acc: number, n: any) => acc + ((n.current || 84.5) - (n.target || 55.0)), 0),
+      balancingMode: 'Dynamic Proportional Distribution'
+    },
+    message: 'Dynamic load rebalancing routine completed successfully. High-stress nodes stabilized.',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Gemini AI Vessel Diagnostic Endpoint
 app.post('/api/gemini/analyze-vessel', async (req, res) => {
   try {
@@ -550,6 +590,15 @@ async function startServer() {
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  try {
+    const secondaryServer = createHttpServer(app);
+    secondaryServer.listen(3098, '0.0.0.0', () => {
+      console.log(`Secondary rebalance API listener running on http://localhost:3098`);
+    });
+  } catch (err) {
+    console.log('Port 3098 already in use or restricted.');
+  }
 }
 
 startServer().catch((err) => {

@@ -548,6 +548,14 @@ export default function App() {
   const [naniteMaxCapacity, setNaniteMaxCapacity] = useState<number>(1000);
   const [naniteReplenishRate, setNaniteReplenishRate] = useState<number>(25);
   const [naniteCostPerNode, setNaniteCostPerNode] = useState<number>(150);
+  const [isDynamicNaniteAllocation, setIsDynamicNaniteAllocation] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('is_dynamic_nanite_allocation');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
   const [isTaskQueueAutomated, setIsTaskQueueAutomated] = useState<boolean>(true);
   const [isNaniteReplenishing, setIsNaniteReplenishing] = useState<boolean>(true);
 
@@ -637,6 +645,59 @@ export default function App() {
     localStorage.setItem('nanite_reservoir', naniteReservoir.toString());
   }, [naniteReservoir]);
 
+  useEffect(() => {
+    localStorage.setItem('is_dynamic_nanite_allocation', JSON.stringify(isDynamicNaniteAllocation));
+  }, [isDynamicNaniteAllocation]);
+
+  // Compute Avg Weekly Hull Integrity from the system vitality telemetry data
+  const computedStressZones = useMemo(() => {
+    const stressZones = [
+      { id: 'fore', name: 'FORE BOW', angle: -90, base: 0.25 },
+      { id: 'fore_port', name: 'FORE-PORT', angle: -45, base: 0.40 },
+      { id: 'port', name: 'PORT FLANK', angle: 0, base: 0.65 },
+      { id: 'aft_port', name: 'AFT-PORT', angle: 45, base: 0.50 },
+      { id: 'aft', name: 'AFT STERN', angle: 90, base: 0.30 },
+      { id: 'aft_starboard', name: 'AFT-STARBOARD', angle: 135, base: 0.55 },
+      { id: 'starboard', name: 'STARBOARD', angle: 180, base: 0.70 },
+      { id: 'fore_starboard', name: 'FORE-STBD', angle: 225, base: 0.35 }
+    ];
+    
+    const elapsed = Date.now() * 0.0015;
+    const integrityFactor = (100 - hullIntegrity) / 10; // ranges from 0 to 1.0
+    const isCriticalActive = criticalModeEnabled && hullIntegrity < criticalThreshold;
+
+    return stressZones.map((zone, idx) => {
+      const isLocked = !!lockedDiagnosticNodes[zone.id];
+      const hasDischargedOverride = dischargedDiagnosticNodes[zone.id] !== undefined;
+
+      let calculatedStress;
+      if (hasDischargedOverride && !isLocked) {
+        calculatedStress = dischargedDiagnosticNodes[zone.id];
+      } else {
+        const wave = Math.sin(elapsed + idx * 1.5) * 0.08 + Math.cos(elapsed * 0.7 - idx) * 0.04;
+        calculatedStress = Math.max(0.12, Math.min(0.98, zone.base + (integrityFactor * 0.35) + wave));
+        
+        if (isCriticalActive) {
+          // Boost to maximum diagnostic state (88% to 98% range)
+          calculatedStress = Math.max(calculatedStress, 0.88 + Math.sin(elapsed * 3 + idx) * 0.08);
+        }
+      }
+
+      return {
+        ...zone,
+        stress: calculatedStress,
+        locked: isLocked
+      };
+    });
+  }, [hullIntegrity, stepData?.step, criticalModeEnabled, criticalThreshold, lockedDiagnosticNodes, dischargedDiagnosticNodes]);
+
+  // Helper for computing nanite cost (Dynamic proportional allocation vs flat fee)
+  const getNaniteCostForStress = useCallback((stress: number, isDynamic: boolean = isDynamicNaniteAllocation, baseFee: number = naniteCostPerNode): number => {
+    if (!isDynamic) return baseFee;
+    // Dynamic cost scales proportionally with node stress (e.g. 30 nL minimum to 350 nL maximum)
+    return Math.max(30, Math.min(350, Math.round(250 * stress)));
+  }, [isDynamicNaniteAllocation, naniteCostPerNode]);
+
   // Automated Nanite Replenishment Ticker (+25 nL/s)
   useEffect(() => {
     const interval = setInterval(() => {
@@ -658,9 +719,12 @@ export default function App() {
     if (nextPendingIndex === -1) return;
 
     const nextItem = repairTaskQueue[nextPendingIndex];
+    const currentZone = computedStressZones.find(z => z.id === nextItem.nodeId);
+    const liveStress = currentZone ? currentZone.stress : nextItem.initialStress;
+    const requiredNaniteCost = getNaniteCostForStress(liveStress, isDynamicNaniteAllocation, naniteCostPerNode);
 
-    // Check if nanite reservoir has reached discharge threshold
-    if (naniteReservoir >= naniteCostPerNode) {
+    // Check if nanite reservoir has reached required discharge threshold
+    if (naniteReservoir >= requiredNaniteCost) {
       // Check if node is locked
       const isLocked = lockedDiagnosticNodes[nextItem.nodeId];
       if (isLocked) {
@@ -670,7 +734,7 @@ export default function App() {
       }
 
       // Execute repair
-      setNaniteReservoir(prev => Math.max(0, prev - naniteCostPerNode));
+      setNaniteReservoir(prev => Math.max(0, prev - requiredNaniteCost));
 
       const now = Date.now();
       setDischargedDiagnosticNodes(prev => ({
@@ -679,9 +743,9 @@ export default function App() {
       }));
       setRecentlyRepairedNodes(prev => ({
         ...prev,
-        [nextItem.nodeId]: { time: now, prevStress: nextItem.initialStress }
+        [nextItem.nodeId]: { time: now, prevStress: liveStress }
       }));
-      setCumulativeNanitesDischarged(prev => prev + naniteCostPerNode);
+      setCumulativeNanitesDischarged(prev => prev + requiredNaniteCost);
       setHullIntegrity(prev => Math.min(100.0, parseFloat((prev + 0.40).toFixed(2))));
 
       // Update queue item status
@@ -696,15 +760,22 @@ export default function App() {
 
       const remainingPending = repairTaskQueue.filter((item, idx) => idx > nextPendingIndex && item.status === 'QUEUED').length;
 
-      addLog('REPAIR', `🤖 AUTOMATED REPAIR QUEUE: Discharged ${naniteCostPerNode} nL nanite resources to repair ${nextItem.name}. Node restored to 5% nominal baseline.`);
+      const allocationLabel = isDynamicNaniteAllocation 
+        ? `Dynamic Allocation @ ${(liveStress * 100).toFixed(0)}% stress` 
+        : 'Flat Fee';
+
+      addLog('REPAIR', `🤖 AUTOMATED REPAIR QUEUE: Discharged ${requiredNaniteCost} nL nanites [${allocationLabel}] to repair ${nextItem.name}. Node restored to 5% nominal baseline.`);
       addLog('SUCCESS', `Task Queue Sequence: ${nextItem.name} repair complete. Remaining queue depth: ${remainingPending}.`);
-      showBanner(`🤖 TASK QUEUE AUTO-REPAIR: Repaired ${nextItem.name}! (${remainingPending} pending in queue)`);
+      showBanner(`🤖 TASK QUEUE AUTO-REPAIR: Repaired ${nextItem.name} (${requiredNaniteCost} nL)! (${remainingPending} pending in queue)`);
     }
   }, [
     naniteReservoir,
     naniteCostPerNode,
+    isDynamicNaniteAllocation,
+    getNaniteCostForStress,
     isTaskQueueAutomated,
     repairTaskQueue,
+    computedStressZones,
     lockedDiagnosticNodes,
     addLog,
     showBanner
@@ -898,48 +969,6 @@ export default function App() {
   }, [currentUser, logsClearedAt]);
 
   // State and auth handlers moved to top of file to prevent block scope declaration errors
-
-  // Compute Avg Weekly Hull Integrity from the system vitality telemetry data
-  const computedStressZones = useMemo(() => {
-    const stressZones = [
-      { id: 'fore', name: 'FORE BOW', angle: -90, base: 0.25 },
-      { id: 'fore_port', name: 'FORE-PORT', angle: -45, base: 0.40 },
-      { id: 'port', name: 'PORT FLANK', angle: 0, base: 0.65 },
-      { id: 'aft_port', name: 'AFT-PORT', angle: 45, base: 0.50 },
-      { id: 'aft', name: 'AFT STERN', angle: 90, base: 0.30 },
-      { id: 'aft_starboard', name: 'AFT-STARBOARD', angle: 135, base: 0.55 },
-      { id: 'starboard', name: 'STARBOARD', angle: 180, base: 0.70 },
-      { id: 'fore_starboard', name: 'FORE-STBD', angle: 225, base: 0.35 }
-    ];
-    
-    const elapsed = Date.now() * 0.0015;
-    const integrityFactor = (100 - hullIntegrity) / 10; // ranges from 0 to 1.0
-    const isCriticalActive = criticalModeEnabled && hullIntegrity < criticalThreshold;
-
-    return stressZones.map((zone, idx) => {
-      const isLocked = !!lockedDiagnosticNodes[zone.id];
-      const hasDischargedOverride = dischargedDiagnosticNodes[zone.id] !== undefined;
-
-      let calculatedStress;
-      if (hasDischargedOverride && !isLocked) {
-        calculatedStress = dischargedDiagnosticNodes[zone.id];
-      } else {
-        const wave = Math.sin(elapsed + idx * 1.5) * 0.08 + Math.cos(elapsed * 0.7 - idx) * 0.04;
-        calculatedStress = Math.max(0.12, Math.min(0.98, zone.base + (integrityFactor * 0.35) + wave));
-        
-        if (isCriticalActive) {
-          // Boost to maximum diagnostic state (88% to 98% range)
-          calculatedStress = Math.max(calculatedStress, 0.88 + Math.sin(elapsed * 3 + idx) * 0.08);
-        }
-      }
-
-      return {
-        ...zone,
-        stress: calculatedStress,
-        locked: isLocked
-      };
-    });
-  }, [hullIntegrity, stepData?.step, criticalModeEnabled, criticalThreshold, lockedDiagnosticNodes, dischargedDiagnosticNodes]);
 
   // Ping Sector handler: calculates aggregate stress for each quadrant and highlights the peak load sector
   const handlePingSector = useCallback(() => {
@@ -1168,7 +1197,12 @@ ${nodeDetails}
     setDischargedDiagnosticNodes(prev => ({ ...prev, ...overrides }));
     setRecentlyRepairedNodes(prev => ({ ...prev, ...repairAnimMap }));
 
-    const nanitesUsed = unlockedNodes.length * 200;
+    let nanitesUsed = 0;
+    unlockedNodes.forEach(node => {
+      nanitesUsed += getNaniteCostForStress(node.stress, isDynamicNaniteAllocation, naniteCostPerNode);
+    });
+
+    setNaniteReservoir(prev => Math.max(0, prev - nanitesUsed));
     setCumulativeNanitesDischarged(prev => prev + nanitesUsed);
 
     const integrityBoost = unlockedNodes.length * 0.40;
@@ -4773,6 +4807,346 @@ ${nodeDetails}
                 })()}
 
               </div>
+            </div>
+
+            {/* Nanite Fluid Reservoir & Sequential Repair Task Queue HUD Panel */}
+            <div className="bg-[#0a0d14] border border-cyan-500/30 p-5 rounded-sm shadow-2xl font-mono relative overflow-hidden transition-all duration-300">
+              {/* Cyan/emerald ambient glow */}
+              <div className="absolute top-0 left-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+
+              {/* Top Section: Header & Live Reservoir Indicator */}
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 border-b border-cyan-500/20 pb-5 mb-5">
+                
+                {/* Left Header Title & Subtitle */}
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-sm bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center">
+                    <Sparkles className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-xs font-bold text-white uppercase tracking-[0.15em]">
+                        Nanite Fluid Reservoir & Sequential Repair Queue
+                      </h3>
+                      <span className={`text-[7.5px] px-2 py-0.5 rounded-sm font-bold tracking-wider uppercase border ${
+                        isDynamicNaniteAllocation 
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-[0_0_8px_rgba(16,185,129,0.2)]' 
+                          : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                      }`}>
+                        {isDynamicNaniteAllocation ? '⚡ Dynamic Allocation Active' : '⚙️ Flat Fee Rate Active'}
+                      </span>
+                    </div>
+                    <p className="text-[8.5px] text-slate-400 mt-1 uppercase tracking-wider">
+                      Synthesized nanite reservoir powers automated, sequential queue repairs across the navigation ring.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Right Controls: Reservoir Status & Instant Boost */}
+                <div className="flex flex-wrap items-center gap-4 self-stretch lg:self-auto justify-between lg:justify-end">
+                  {/* Reservoir Level Widget */}
+                  <div className="flex flex-col gap-1 min-w-[200px]">
+                    <div className="flex justify-between items-center text-[9px] font-bold text-slate-300 uppercase">
+                      <span className="flex items-center gap-1">
+                        <Zap className="w-3 h-3 text-cyan-400" />
+                        Reservoir: {Math.round(naniteReservoir)} / {naniteMaxCapacity} nL
+                      </span>
+                      <span className="text-cyan-400 font-extrabold">
+                        {((naniteReservoir / naniteMaxCapacity) * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-950 h-2.5 rounded-sm border border-cyan-500/30 overflow-hidden relative">
+                      <div 
+                        className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-all duration-300 relative"
+                        style={{ width: `${(naniteReservoir / naniteMaxCapacity) * 100}%` }}
+                      >
+                        <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                      </div>
+                    </div>
+                    <div className="flex justify-between text-[7.5px] text-slate-500 uppercase">
+                      <span>Replenish: +{naniteReplenishRate} nL/s</span>
+                      <span>Cost: {isDynamicNaniteAllocation ? '30–250 nL (Scaled)' : `${naniteCostPerNode} nL Flat`}</span>
+                    </div>
+                  </div>
+
+                  {/* Replenish Toggle & Instant Inject */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setIsNaniteReplenishing(!isNaniteReplenishing);
+                        addLog('INFO', `Nanite synthesis auto-replenishment ${!isNaniteReplenishing ? 'RESUMED' : 'PAUSED'}.`);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-sm border text-[8.5px] font-bold uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer ${
+                        isNaniteReplenishing 
+                          ? 'bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-500/40 text-emerald-300' 
+                          : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-400'
+                      }`}
+                      title="Toggle automatic nanite reservoir replenishment ticker (+25 nL/s)"
+                    >
+                      {isNaniteReplenishing ? <Play className="w-3 h-3 text-emerald-400" /> : <Pause className="w-3 h-3 text-slate-400" />}
+                      <span>{isNaniteReplenishing ? 'Synthesizing' : 'Paused'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleInstantNaniteInject}
+                      className="px-3 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/35 active:bg-cyan-600/50 text-cyan-300 border border-cyan-500/40 hover:border-cyan-400 rounded-sm text-[8.5px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
+                      title="Inject +250 nL synthesized nanites into the reservoir instantly"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>+250 nL Boost</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Middle Section: Dynamic Nanite Allocation Setting & Cost Options */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5 p-3.5 bg-black/40 border border-cyan-500/20 rounded-sm">
+                
+                {/* Setting 1: Dynamic Allocation Toggle Switch */}
+                <div className="flex flex-col justify-between p-2.5 bg-slate-950/80 border border-white/5 rounded-sm">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[9.5px] font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                      Dynamic Nanite Allocation
+                    </span>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        className="sr-only" 
+                        checked={isDynamicNaniteAllocation}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setIsDynamicNaniteAllocation(checked);
+                          addLog('INFO', checked 
+                            ? 'Dynamic Nanite Allocation ENABLED: Repair cost scales proportional to node stress level.' 
+                            : 'Dynamic Nanite Allocation DISABLED: Flat-rate nanite cost per node enforced.');
+                          showBanner(checked 
+                            ? '⚡ DYNAMIC NANITE ALLOCATION ENABLED: Cost scales dynamically (30–250 nL) based on stress!' 
+                            : '⚙️ FLAT FEE NANITE RATE ENFORCED: Flat fee charged per node repair.');
+                        }}
+                      />
+                      <div className={`w-9 h-5 rounded-full transition-colors duration-300 p-0.5 border ${
+                        isDynamicNaniteAllocation 
+                          ? 'bg-emerald-500/20 border-emerald-500/50' 
+                          : 'bg-slate-900 border-white/10'
+                      }`}>
+                        <div className={`w-3.5 h-3.5 rounded-full shadow-md transform transition-transform duration-300 ${
+                          isDynamicNaniteAllocation 
+                            ? 'translate-x-4 bg-emerald-400' 
+                            : 'translate-x-0 bg-slate-600'
+                        }`} />
+                      </div>
+                    </label>
+                  </div>
+                  <p className="text-[8px] text-slate-400 leading-relaxed mt-1">
+                    Adjusts nanite cost based on real-time node stress (e.g. 30 nL for low stress vs 225 nL for critical stress), preventing resource waste on routine maintenance.
+                  </p>
+                </div>
+
+                {/* Setting 2: Base Cost / Cost Mode Indicator */}
+                <div className="flex flex-col justify-between p-2.5 bg-slate-950/80 border border-white/5 rounded-sm">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[9.5px] font-bold text-slate-300 uppercase tracking-wider">
+                      {isDynamicNaniteAllocation ? 'Dynamic Stress Formula' : 'Base Flat Rate per Node'}
+                    </span>
+                    <span className="text-[9px] font-bold text-cyan-400">
+                      {isDynamicNaniteAllocation ? '30–250 nL / node' : `${naniteCostPerNode} nL / node`}
+                    </span>
+                  </div>
+                  {isDynamicNaniteAllocation ? (
+                    <div className="text-[8px] text-emerald-400/90 leading-relaxed mt-1 bg-emerald-950/20 p-1.5 rounded border border-emerald-500/20">
+                      ✓ <span className="font-bold">Resource Efficiency Active</span>: Low-stress preventive repairs consume up to 75% fewer nanites!
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 mt-1">
+                      <label className="text-[8px] text-slate-400 uppercase">Flat Rate:</label>
+                      <input 
+                        type="number" 
+                        min="50" 
+                        max="400" 
+                        step="10" 
+                        value={naniteCostPerNode}
+                        onChange={(e) => setNaniteCostPerNode(Math.max(10, parseInt(e.target.value) || 150))}
+                        className="w-20 bg-black border border-white/10 rounded px-2 py-0.5 text-[10px] font-mono text-cyan-300 focus:outline-none focus:border-cyan-500"
+                      />
+                      <span className="text-[8px] text-slate-500 uppercase">nL</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Setting 3: Automated Task Queue Execution Toggle */}
+                <div className="flex flex-col justify-between p-2.5 bg-slate-950/80 border border-white/5 rounded-sm">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[9.5px] font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <ListOrdered className="w-3.5 h-3.5 text-cyan-400" />
+                      Queue Automation Engine
+                    </span>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        className="sr-only" 
+                        checked={isTaskQueueAutomated}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setIsTaskQueueAutomated(checked);
+                          addLog('INFO', `Sequential Repair Task Queue automation ${checked ? 'ENABLED' : 'DISABLED'}.`);
+                          showBanner(checked ? '🤖 QUEUE AUTOMATION ARMED: Auto-executing sequential repairs.' : '⏸️ QUEUE AUTOMATION PAUSED.');
+                        }}
+                      />
+                      <div className={`w-9 h-5 rounded-full transition-colors duration-300 p-0.5 border ${
+                        isTaskQueueAutomated 
+                          ? 'bg-cyan-500/20 border-cyan-500/50' 
+                          : 'bg-slate-900 border-white/10'
+                      }`}>
+                        <div className={`w-3.5 h-3.5 rounded-full shadow-md transform transition-transform duration-300 ${
+                          isTaskQueueAutomated 
+                            ? 'translate-x-4 bg-cyan-400' 
+                            : 'translate-x-0 bg-slate-600'
+                        }`} />
+                      </div>
+                    </label>
+                  </div>
+                  <p className="text-[8px] text-slate-400 leading-relaxed mt-1">
+                    Automatically discharges nanite repairs sequentially whenever reservoir level satisfies cost requirements for queued items.
+                  </p>
+                </div>
+
+              </div>
+
+              {/* Bottom Section: Task Queue Item List & Bulk Queue Actions */}
+              <div>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <ListOrdered className="w-3.5 h-3.5 text-cyan-400" />
+                      Sequential Repair Queue List ({repairTaskQueue.filter(i => i.status === 'QUEUED').length} Pending)
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleAutoQueueStressedNodes}
+                      className="px-2.5 py-1 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/40 text-cyan-300 rounded text-[8.5px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Flag all diagnostic nodes with >40% stress into task queue"
+                    >
+                      <ListPlus className="w-3 h-3 text-cyan-400" />
+                      <span>Auto-Queue Stressed (&gt;40%)</span>
+                    </button>
+
+                    {repairTaskQueue.length > 0 && (
+                      <button
+                        onClick={handleClearTaskQueue}
+                        className="px-2 py-1 bg-red-950/60 hover:bg-red-900/80 border border-red-500/40 text-red-300 rounded text-[8.5px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Clear all queued repair items"
+                      >
+                        <Trash2 className="w-3 h-3 text-red-400" />
+                        <span>Clear Queue</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Queue Items Table / Empty State */}
+                {repairTaskQueue.length === 0 ? (
+                  <div className="p-4 bg-black/20 border border-dashed border-white/10 rounded-sm text-center">
+                    <p className="text-[9px] text-slate-500 uppercase tracking-wider">
+                      Repair Task Queue is empty. Click <span className="text-cyan-400 font-bold">Flag for Task Queue</span> on any navigation node or use <span className="text-cyan-400 font-bold">Auto-Queue Stressed</span> to populate.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto border border-white/10 rounded-sm bg-black/40">
+                    <table className="w-full text-left border-collapse text-[9px] font-mono">
+                      <thead>
+                        <tr className="bg-slate-900/80 border-b border-white/10 text-slate-400 uppercase text-[8px] tracking-wider">
+                          <th className="py-2 px-3">Pos</th>
+                          <th className="py-2 px-3">Node Name</th>
+                          <th className="py-2 px-3">Current Stress</th>
+                          <th className="py-2 px-3">Required Nanite Cost</th>
+                          <th className="py-2 px-3">Status</th>
+                          <th className="py-2 px-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {repairTaskQueue.map((item, index) => {
+                          const currentZone = computedStressZones.find(z => z.id === item.nodeId);
+                          const liveStress = currentZone ? currentZone.stress : item.initialStress;
+                          const nodeCost = getNaniteCostForStress(liveStress, isDynamicNaniteAllocation, naniteCostPerNode);
+                          const isLocked = lockedDiagnosticNodes[item.nodeId];
+
+                          return (
+                            <tr key={item.id} className={`hover:bg-white/5 transition-colors ${item.status === 'COMPLETED' ? 'opacity-50 bg-emerald-950/10' : ''}`}>
+                              <td className="py-2 px-3 font-extrabold text-cyan-400">
+                                {item.status === 'QUEUED' ? `#${repairTaskQueue.filter((q, i) => i <= index && q.status === 'QUEUED').length}` : '—'}
+                              </td>
+                              <td className="py-2 px-3 font-bold text-white flex items-center gap-1.5">
+                                {isLocked && <span className="text-blue-400" title="Node Locked">🔒</span>}
+                                <span>{item.name}</span>
+                              </td>
+                              <td className="py-2 px-3">
+                                <span className={`font-bold ${liveStress > 0.6 ? 'text-red-400' : liveStress > 0.3 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                  {(liveStress * 100).toFixed(0)}%
+                                </span>
+                              </td>
+                              <td className="py-2 px-3">
+                                <span className="font-bold text-cyan-300 flex items-center gap-1">
+                                  <span>{nodeCost} nL</span>
+                                  {isDynamicNaniteAllocation && (
+                                    <span className="text-[7.5px] px-1 py-0.2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded uppercase font-normal">
+                                      Dynamic
+                                    </span>
+                                  )}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3">
+                                <span className={`text-[7.5px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                                  item.status === 'COMPLETED'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : item.status === 'REPAIRING'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                                    : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                }`}>
+                                  {item.status}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  {item.status === 'QUEUED' && (
+                                    <>
+                                      <button
+                                        onClick={() => handleReorderTaskQueue(index, index - 1)}
+                                        disabled={index === 0}
+                                        className="p-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded text-slate-300 hover:text-white cursor-pointer"
+                                        title="Move Up in Queue"
+                                      >
+                                        <ArrowUp className="w-3 h-3" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleReorderTaskQueue(index, index + 1)}
+                                        disabled={index === repairTaskQueue.length - 1}
+                                        className="p-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded text-slate-300 hover:text-white cursor-pointer"
+                                        title="Move Down in Queue"
+                                      >
+                                        <ArrowDown className="w-3 h-3" />
+                                      </button>
+                                    </>
+                                  )}
+                                  <button
+                                    onClick={() => handleDequeueNode(item.id)}
+                                    className="p-1 bg-red-950 hover:bg-red-900 border border-red-500/30 rounded text-red-300 hover:text-white cursor-pointer"
+                                    title="Remove from Queue"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
             </div>
 
             {/* Tactical Grid: Nav Ring and Live Stabilizer */}
