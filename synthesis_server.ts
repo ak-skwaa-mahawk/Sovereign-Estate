@@ -38,6 +38,39 @@ app.get("/ledger", (_req: Request, res: Response) => {
   res.json(readLedger());
 });
 
+// GET /ledger/history - Query historical snapshots by UEI and/or limit
+app.get("/ledger/history", (req: Request, res: Response) => {
+  const ledger = readLedger();
+  const ueiFilter = req.query.uei as string | undefined;
+  const limitParam = req.query.limit as string | undefined;
+
+  let records = ledger;
+
+  // Filter by UEI if provided
+  if (ueiFilter) {
+    records = records.filter(
+      (item: any) => item.uei && item.uei.toLowerCase() === ueiFilter.toLowerCase()
+    );
+  }
+
+  // Limit results if provided and valid
+  if (limitParam) {
+    const limit = parseInt(limitParam, 10);
+    if (!isNaN(limit) && limit > 0) {
+      records = records.slice(-limit);
+    }
+  }
+
+  res.json({
+    total_matches: records.length,
+    query: {
+      uei: ueiFilter || null,
+      limit: limitParam ? parseInt(limitParam, 10) : null
+    },
+    history: records
+  });
+});
+
 app.get("/synthesize", async (_req: Request, res: Response) => {
   const ledger = readLedger();
   if (!ledger || ledger.length === 0) {
