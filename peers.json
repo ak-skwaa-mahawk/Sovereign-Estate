@@ -1,0 +1,5 @@
+[
+  "ws://localhost:4001",
+  "ws://localhost:4002",
+  "wss://northstar.soliton.registry:4001"
+]
