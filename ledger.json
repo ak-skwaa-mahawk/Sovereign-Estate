@@ -1,0 +1,49 @@
+[
+  {
+    "uei": "SJLLZH4KKMZ9",
+    "coordinates": {
+      "lat": 65.663672,
+      "lon": -144.048316
+    },
+    "lineage": "North Star Seed Node Nᵒʳᵗʰ‑001",
+    "aggregates": {
+      "vitality": 16.181841777382314,
+      "epsilon_d": 0,
+      "coherence": 1
+    },
+    "witness_only": true,
+    "witness_hash": "93f6ae12d00e681e1db7ae8646e3e1eb3912fc69aa7f7df067f8f82254e80389"
+  },
+  {
+    "uei": "SJLLZH4KKMZ9",
+    "coordinates": {
+      "lat": 65.663672,
+      "lon": -144.048316
+    },
+    "lineage": "North Star Seed Node Nᵒʳᵗʰ‑001",
+    "aggregates": {
+      "vitality": 16.181841777382314,
+      "epsilon_d": 0.12,
+      "coherence": 0.85
+    },
+    "witness_only": true,
+    "timestamp": "2026-08-05T16:42:35.513Z",
+    "witness_hash": "d59a1837884a965a8a5aba293c81ae83bea4b95a8e845ae0844cef853c5f7787"
+  },
+  {
+    "uei": "SJLLZH4KKMZ9",
+    "coordinates": {
+      "lat": 65.663672,
+      "lon": -144.048316
+    },
+    "lineage": "North Star Seed Node Nᵒʳᵗʰ‑001",
+    "aggregates": {
+      "vitality": 16.181841777382314,
+      "epsilon_d": 0.04,
+      "coherence": 0.92
+    },
+    "witness_only": true,
+    "timestamp": "2026-08-05T16:43:50.823Z",
+    "witness_hash": "93d039a86befc66945778a6ad6c19be7a4fabe0441b8011a554ef0b77d112c2b"
+  }
+]
