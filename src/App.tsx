@@ -4,6 +4,7 @@ import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { WorkspaceHub } from './components/WorkspaceHub';
 import { ShortcutsHelpModal } from './components/ShortcutsHelpModal';
 import { AiCopilotModal } from './components/AiCopilotModal';
+import { EpochSettlementPanel } from './components/EpochSettlementPanel';
 import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
 import { 
   signInWithPopup, 
@@ -130,7 +131,7 @@ interface StepData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'council' | 'bridge'>('council');
+  const [activeTab, setActiveTab] = useState<'council' | 'bridge' | 'settlement'>('council');
   
   // Firebase Auth and sync states
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -4131,6 +4132,17 @@ ${nodeDetails}
                   <Navigation className="w-3.5 h-3.5" />
                   FPT-Ω Vessel Bridge
                 </button>
+                <button
+                  onClick={() => setActiveTab('settlement')}
+                  className={`px-4 py-2 rounded-sm transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+                    activeTab === 'settlement' 
+                      ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-md font-semibold' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                  Sepolia Settlement (Epoch #1)
+                </button>
               </div>
             </div>
             <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase mr-1">Shortcuts: Ctrl+T (Toggle View) | Shift+R (Manual Repair) | Shift+B (Bulk Repair Nodes) | Shift+L (Lock Critical) | Shift+U (Unlock Selection)</span>
@@ -5981,6 +5993,13 @@ ${nodeDetails}
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Tab 3: On-Chain Sepolia Batch Settlement (Epoch #1) */}
+        {activeTab === 'settlement' && (
+          <div className="space-y-6">
+            <EpochSettlementPanel />
           </div>
         )}
 
