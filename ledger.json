@@ -5,7 +5,7 @@
       "lat": 65.663672,
       "lon": -144.048316
     },
-    "lineage": "North Star Seed Node Nᵒʳᵗʰ‑001",
+    "lineage": "North Star Seed Node N\u1d52\u02b3\u1d57\u02b0\u2011001",
     "aggregates": {
       "vitality": 16.181841777382314,
       "epsilon_d": 0,
@@ -20,7 +20,7 @@
       "lat": 65.663672,
       "lon": -144.048316
     },
-    "lineage": "North Star Seed Node Nᵒʳᵗʰ‑001",
+    "lineage": "North Star Seed Node N\u1d52\u02b3\u1d57\u02b0\u2011001",
     "aggregates": {
       "vitality": 16.181841777382314,
       "epsilon_d": 0.12,
@@ -36,7 +36,7 @@
       "lat": 65.663672,
       "lon": -144.048316
     },
-    "lineage": "North Star Seed Node Nᵒʳᵗʰ‑001",
+    "lineage": "North Star Seed Node N\u1d52\u02b3\u1d57\u02b0\u2011001",
     "aggregates": {
       "vitality": 16.181841777382314,
       "epsilon_d": 0.04,
@@ -45,5 +45,21 @@
     "witness_only": true,
     "timestamp": "2026-08-05T16:43:50.823Z",
     "witness_hash": "93d039a86befc66945778a6ad6c19be7a4fabe0441b8011a554ef0b77d112c2b"
+  },
+  {
+    "uei": "SJLLZH4KKMZ9",
+    "coordinates": {
+      "lat": 65.663672,
+      "lon": -144.048316
+    },
+    "lineage": "North Star Seed Node N\u1d52\u02b3\u1d57\u02b0\u2011001 [Cycle 0]",
+    "aggregates": {
+      "vitality": 16.18,
+      "epsilon_d": 0.0,
+      "coherence": 0.95
+    },
+    "witness_only": true,
+    "timestamp": "2026-09-08T22:51:55.000Z",
+    "witness_hash": "a135b538a719273cb46498244248578f0902aee399cc6ed21b77baf13ae562b6"
   }
 ]
