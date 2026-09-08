@@ -13,6 +13,7 @@ echo "=================================================="
 echo "[1/6] Terminating existing server/watcher processes..."
 pkill -9 -f "synthesis_server" 2>/dev/null
 pkill -9 -f "watch_ledger" 2>/dev/null
+pkill -9 -f "audit_to_ledger_bridge" 2>/dev/null
 pkill -9 -f "peer_node" 2>/dev/null
 sleep 1
 
@@ -31,6 +32,10 @@ echo $! > "$LOG_DIR/peer_4001.pid"
 echo "[4/6] Starting peer_node_4002.py on WebSocket port 4002..."
 python3 -u peer_node_4002.py > "$LOG_DIR/peer_4002.log" 2>&1 &
 echo $! > "$LOG_DIR/peer_4002.pid"
+
+echo "[4.5/6] Starting audit_to_ledger_bridge.py daemon..."
+python3 -u audit_to_ledger_bridge.py > "$LOG_DIR/bridge.log" 2>&1 &
+echo $! > "$LOG_DIR/bridge.pid"
 
 echo "[5/6] Starting watch_ledger.py background daemon..."
 python3 -u watch_ledger.py > "$LOG_DIR/watcher.log" 2>&1 &

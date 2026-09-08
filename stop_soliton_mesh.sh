@@ -14,6 +14,7 @@ done
 
 pkill -9 -f "synthesis_server" 2>/dev/null
 pkill -9 -f "peer_node" 2>/dev/null
-pkill -9 -f "watch_ledger" 2>/dev/null
+pkill -9 -f "watch_ledger"
+pkill -9 -f "audit_to_ledger_bridge" 2>/dev/null
 
 echo "All Soliton Mesh background processes stopped."
