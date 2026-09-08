@@ -3,9 +3,9 @@ import os
 import socket
 import subprocess
 import requests
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("Sovereign-Control-Surface")
+mcp = MCPServer("Sovereign-Control-Surface")
 
 SOCK_PATH = "/data/data/com.termux/files/usr/tmp/fpt_kernel.sock"
 SYNTHESIS_BASE = "http://localhost:3000"
@@ -68,9 +68,11 @@ def request_state_synthesis() -> dict:
 @mcp.tool()
 def broadcast_mesh_gossip(target: str = "all") -> dict:
     """Forces a gossip broadcast cycle across Soliton mesh nodes (4001, 4002, northstar)."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    broadcaster = os.path.join(base_dir, "gossip_broadcaster.py")
     try:
         res = subprocess.run(
-            ["python3", "gossip_broadcaster.py", "-t", target],
+            ["python3", "-u", broadcaster, "-t", target],
             capture_output=True,
             text=True,
             check=True
