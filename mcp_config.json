@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "sovereign_control": {
+      "command": "python3",
+      "args": [
+        "/data/data/com.termux/files/home/Sovereign-Estate/mcp_server.py"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
