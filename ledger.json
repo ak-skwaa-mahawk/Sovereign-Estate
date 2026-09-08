@@ -61,5 +61,21 @@
     "witness_only": true,
     "timestamp": "2026-09-08T22:51:55.000Z",
     "witness_hash": "a135b538a719273cb46498244248578f0902aee399cc6ed21b77baf13ae562b6"
+  },
+  {
+    "uei": "SJLLZH4KKMZ9",
+    "coordinates": {
+      "lat": 65.663672,
+      "lon": -144.048316
+    },
+    "lineage": "North Star Seed Node N\u1d52\u02b3\u1d57\u02b0\u2011001 [Cycle 0]",
+    "aggregates": {
+      "vitality": 16.18,
+      "epsilon_d": 0.0,
+      "coherence": 0.95
+    },
+    "witness_only": true,
+    "timestamp": "2026-09-08T23:12:45.000Z",
+    "witness_hash": "acd6fdec62cfe421331bb3f1ae57c7c1f627a5ec6e7751351c0e42e7d76acce0"
   }
 ]

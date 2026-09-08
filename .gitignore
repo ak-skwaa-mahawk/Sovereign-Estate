@@ -8,3 +8,4 @@ coverage/
 !.env.example
 logs/
 package-lock.json
+__pycache__/
