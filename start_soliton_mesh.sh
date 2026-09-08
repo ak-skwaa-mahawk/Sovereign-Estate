@@ -13,6 +13,12 @@ echo "=================================================="
 echo "[1/6] Terminating existing server/watcher processes..."
 pkill -9 -f "synthesis_server" 2>/dev/null
 pkill -9 -f "watch_ledger" 2>/dev/null
+# Start Admission-Gate FPT Kernel Daemon
+if [ ! -S /data/data/com.termux/files/usr/tmp/fpt_kernel.sock ]; then
+    echo "Starting admission gate FPT kernel daemon..."
+    (cd /data/data/com.termux/files/home/admission-gate/Fpt_kernel_daem_sqaw && python3 fpt_daemon.py > /dev/null 2>&1 &)
+    sleep 1
+fi
 pkill -9 -f "audit_to_ledger_bridge" 2>/dev/null
 pkill -9 -f "peer_node" 2>/dev/null
 sleep 1

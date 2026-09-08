@@ -1,3 +1,5 @@
+pkill -f "python3 fpt_daemon.py" 2>/dev/null || true
+rm -f /data/data/com.termux/files/usr/tmp/fpt_kernel.sock
 #!/usr/bin/env bash
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
