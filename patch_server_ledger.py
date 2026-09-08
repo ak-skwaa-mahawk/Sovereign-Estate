@@ -1,6 +1,6 @@
 import os
 
-server_path = "Sovereign-Estate/server.ts"
+server_path = "server.ts"
 
 with open(server_path, "r") as f:
     content = f.read()
@@ -45,6 +45,6 @@ if "app.get('/ledger'" not in content:
 
     with open(server_path, "w") as f:
         f.write(content)
-    print("Successfully patched /ledger into Sovereign-Estate/server.ts")
+    print("Successfully patched /ledger into server.ts")
 else:
     print("/ledger route already exists in server.ts")

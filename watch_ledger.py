@@ -17,7 +17,7 @@ def handle_change():
     
     # 1. Trigger synthesis evaluation
     try:
-        resp = requests.get(SYNTHESIS_URL, timeout=5)
+        resp = requests.get(SYNTHESIS_URL, timeout=25)
         if resp.status_code == 200:
             print("[FILE WATCHER] Synthesis updated successfully.")
         else:

@@ -111,7 +111,7 @@ Witness Hash: ${hash}`;
         Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "grok-2-1212",
+        model: "grok-4.5",
         messages: [{ role: "user", content: prompt }]
       })
     });
