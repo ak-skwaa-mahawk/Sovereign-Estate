@@ -168,5 +168,47 @@ async def broadcast_mesh_gossip(target: str = "all") -> dict:
     except subprocess.CalledProcessError as e:
         return {"status": "broadcast_failed", "stderr": e.stderr.strip()}
 
+
+
+# ---------------------------------------------------------
+# Sovereign Manifold Extensions
+# ---------------------------------------------------------
+MANIFOLD_DIR = "/data/data/com.termux/files/home/sovereign-manifold"
+
+def _run_governance_sync() -> dict:
+    import subprocess
+    script = os.path.join(MANIFOLD_DIR, "tools/active_governance.py")
+    res = subprocess.run(["python3", script], capture_output=True, text=True, cwd=MANIFOLD_DIR)
+    if res.returncode != 0:
+        return {"status": "governance_failed", "stderr": res.stderr.strip()}
+    
+    # Read newly appended ledger wire entry
+    wire_path = os.path.expanduser("~/Turbo_Takeoff/public_ledger_wire.jsonl")
+    with open(wire_path, 'r') as f:
+        latest = json.loads(f.readlines()[-1].strip())
+    return {"status": "consensus_sealed", "output": res.stdout.strip(), "sealed_block": latest}
+
+def _query_surplus_sync(window: int) -> dict:
+    sys_path_save = list(os.sys.path)
+    tools_dir = os.path.join(MANIFOLD_DIR, "tools")
+    if tools_dir not in os.sys.path:
+        os.sys.path.insert(0, tools_dir)
+    try:
+        import tordial_mcp_server
+        server = tordial_mcp_server.TordialMCPServer()
+        return server.get_surplus_vector(window_seconds=window)
+    finally:
+        os.sys.path = sys_path_save
+
+@mcp.tool()
+async def trigger_active_governance() -> dict:
+    """Convenes the 4-agent cognitive council (Grok, Harper, Benjamin, Lucas) to execute 5D policy debate and cryptographic ledger sealing."""
+    return await asyncio.to_thread(_run_governance_sync)
+
+@mcp.tool()
+async def read_surplus_vector(window_seconds: int = 60) -> dict:
+    """Reads real-time predictive surplus energy, trajectory velocity deltas, and Kalman filter uncertainty from the manifold store."""
+    return await asyncio.to_thread(_query_surplus_sync, window_seconds)
+
 if __name__ == "__main__":
     mcp.run()
