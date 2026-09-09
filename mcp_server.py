@@ -4,6 +4,7 @@ import socket
 import subprocess
 import ctypes
 import time
+import asyncio
 import requests
 from mcp.server.mcpserver import MCPServer
 
@@ -48,10 +49,31 @@ if os.path.exists(JIGGLER_LIB_PATH):
         _jiggler_lib = None
 
 # ---------------------------------------------------------
-# MCP Tools
+# Synchronous Helper Functions
+# ---------------------------------------------------------
+def _dispatch_socket_sync(payload: dict) -> dict:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(5.0)
+        s.connect(SOCK_PATH)
+        s.sendall(json.dumps(payload).encode() + b"\n")
+        raw_resp = s.recv(4096).decode().strip()
+        return json.loads(raw_resp)
+
+def _gossip_sync(target: str, base_dir: str) -> dict:
+    broadcaster = os.path.join(base_dir, "gossip_broadcaster.py")
+    res = subprocess.run(
+        ["python3", "-u", broadcaster, "-t", target],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    return {"status": "broadcast_complete", "output": res.stdout.strip()}
+
+# ---------------------------------------------------------
+# MCP Tools (Async-enabled for non-blocking stdio loop)
 # ---------------------------------------------------------
 @mcp.tool()
-def verify_manifold_metric(
+async def verify_manifold_metric(
     d: float = 27.5,
     r: float = 155.0,
     sigma_t: float = 62.0,
@@ -89,7 +111,7 @@ def verify_manifold_metric(
     }
 
 @mcp.tool()
-def dispatch_governed_action(
+async def dispatch_governed_action(
     command: str,
     target_path: str,
     action_id: str,
@@ -109,16 +131,12 @@ def dispatch_governed_action(
     }
 
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.connect(SOCK_PATH)
-            s.sendall(json.dumps(payload).encode() + b"\n")
-            raw_resp = s.recv(4096).decode().strip()
-            return json.loads(raw_resp)
+        return await asyncio.to_thread(_dispatch_socket_sync, payload)
     except Exception as e:
         return {"error": f"Socket failure: {str(e)}"}
 
 @mcp.tool()
-def read_witness_ledger(limit: int = 5, uei: str = None) -> dict:
+async def read_witness_ledger(limit: int = 5, uei: str = None) -> dict:
     """Reads historical or recent witness states from the Sovereign Estate ledger."""
     params = {}
     if limit:
@@ -127,33 +145,26 @@ def read_witness_ledger(limit: int = 5, uei: str = None) -> dict:
         params["uei"] = uei
 
     try:
-        resp = requests.get(f"{SYNTHESIS_BASE}/ledger/history", params=params, timeout=5)
+        resp = await asyncio.to_thread(lambda: requests.get(f"{SYNTHESIS_BASE}/ledger/history", params=params, timeout=5))
         return resp.json()
     except Exception as e:
         return {"error": f"Failed to query ledger endpoint: {str(e)}"}
 
 @mcp.tool()
-def request_state_synthesis() -> dict:
+async def request_state_synthesis() -> dict:
     """Requests a grok-4.5 state audit of the latest witness aggregates."""
     try:
-        resp = requests.get(f"{SYNTHESIS_BASE}/synthesize", timeout=30)
+        resp = await asyncio.to_thread(lambda: requests.get(f"{SYNTHESIS_BASE}/synthesize", timeout=30))
         return resp.json()
     except Exception as e:
         return {"error": f"Synthesis request failed: {str(e)}"}
 
 @mcp.tool()
-def broadcast_mesh_gossip(target: str = "all") -> dict:
+async def broadcast_mesh_gossip(target: str = "all") -> dict:
     """Forces a gossip broadcast cycle across Soliton mesh nodes (4001, 4002, northstar)."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    broadcaster = os.path.join(base_dir, "gossip_broadcaster.py")
     try:
-        res = subprocess.run(
-            ["python3", "-u", broadcaster, "-t", target],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return {"status": "broadcast_complete", "output": res.stdout.strip()}
+        return await asyncio.to_thread(_gossip_sync, target, base_dir)
     except subprocess.CalledProcessError as e:
         return {"status": "broadcast_failed", "stderr": e.stderr.strip()}
 
