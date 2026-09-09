@@ -180,7 +180,8 @@ def _run_governance_sync() -> dict:
     script = os.path.join(MANIFOLD_DIR, "tools/active_governance.py")
     res = subprocess.run(["python3", script], capture_output=True, text=True, cwd=MANIFOLD_DIR)
     if res.returncode != 0:
-        return {"status": "governance_failed", "stderr": res.stderr.strip()}
+        err_msg = res.stderr.strip() or res.stdout.strip()
+        return {"status": "governance_failed", "error": err_msg}
     
     # Read newly appended ledger wire entry
     wire_path = os.path.expanduser("~/Turbo_Takeoff/public_ledger_wire.jsonl")
